@@ -1,0 +1,31 @@
+[package]
+name = "shaperack"
+version = "0.1.0"
+edition = "2021"
+description = "A drawable, tempo-synced modulation rack for VST3 and CLAP hosts"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/0xPRISMM/shaperack"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+standalone = ["nih_plug/standalone"]
+
+[[bin]]
+name = "shaperack-preview"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[workspace]
+members = ["xtask"]
+exclude = ["vendor/nih-plug", "vendor/nih-plug/nih_plug_derive", "vendor/nih-plug/nih_plug_egui", "vendor/nih-plug/nih_plug_xtask"]
+
+[dependencies]
+nih_plug = { path = "vendor/nih-plug" }
+nih_plug_egui = { path = "vendor/nih-plug/nih_plug_egui" }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
