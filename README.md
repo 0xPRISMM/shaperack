@@ -1,5 +1,5 @@
 # ShapeRack
-Check [Releases](https://github.com/0xPRISMM/shaperack/releases) for ZIP/EXE Downloadable software 
+Check [Releases](https://github.com/0xPRISMM/shaperack/releases) for ZIP file (EXE download coming tomorrow)
 
 An original Rust modulation rack for **Windows x64 VST3 and CLAP** hosts. Draw a rhythm and use it to animate volume, a low-pass filter, stereo balance, or soft saturation. Designed for FL Studio mixer inserts.
 
