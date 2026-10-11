@@ -7,3 +7,9 @@
 - clap-sys: MIT/Apache-2.0, contributors. CLAP ABI: MIT, CLAP contributors.
 
 Full dependency versions are in Cargo.lock. Bundled notices for the plugin framework are in `licenses/`; the release package includes those notices. Other dependency licenses can be inspected with `cargo tree` and the linked upstream projects. Source for the binary release is available at the corresponding version tag in this repository.
+
+## Windows installer
+
+The v0.1.1 setup EXE uses [Inno Setup 6](https://jrsoftware.org/isinfo.php), by Jordan Russell and Martijn Laan. Its installer engine is distributed under the [Inno Setup License](https://jrsoftware.org/files/is/license.txt). ShapeRack's plugin source remains GPL-3.0-or-later.
+
+Inno Setup is required to rebuild the setup EXE with `scripts/build-installer.ps1`, after preparing the plugin package with `scripts/package.ps1`. Users do not need to install Inno Setup to run the resulting installer or use ShapeRack.

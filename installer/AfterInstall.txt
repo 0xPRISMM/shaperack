@@ -1,0 +1,29 @@
+ShapeRack is installed.
+
+Load ShapeRack in FL Studio:
+
+1. Open FL Studio (64-bit).
+2. Select Options > Manage plugins.
+3. Enable Verify plugins, then click Find installed plugins.
+4. Open a Mixer insert's effect slot and select ShapeRack from the plugin list.
+
+The VST3 plugin is installed in the standard Windows VST3 folder:
+C:\Program Files\Common Files\VST3\ShapeRack.vst3
+
+ShapeRack starts with a quarter-note Volume pump. Adjust Amount or Mix to taste.
+Select Filter, Pan, or Drive and click Enabled to add another effect. Draw on
+each module's graph or choose a preset. Sync follows the host's tempo; Free
+sets a rate in Hz.
+
+If you selected CLAP, rescan the CLAP plugin folder in a compatible host:
+C:\Program Files\Common Files\CLAP
+
+Documentation and licenses are in:
+C:\Program Files\PRISMM\ShapeRack
+
+To uninstall, close your audio hosts and remove ShapeRack from Windows
+Settings > Apps > Installed apps. Projects using ShapeRack will require
+the plugin to remain installed.
+
+Project, source code, and releases:
+https://github.com/0xPRISMM/shaperack

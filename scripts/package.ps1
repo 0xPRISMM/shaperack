@@ -1,6 +1,12 @@
-param([string]$Version = '0.1.0')
+param([string]$Version)
 $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if (-not $Version) {
+    $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'Cargo.toml') -Raw
+    $versionMatch = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"')
+    if (-not $versionMatch.Success) { throw 'Cannot read package version from Cargo.toml.' }
+    $Version = $versionMatch.Groups[1].Value
+}
 $bundleRoot = Join-Path $repoRoot 'target\bundled'
 $stageRoot = Join-Path $repoRoot "dist\ShapeRack-$Version-windows-x64"
 $zipPath = Join-Path $repoRoot "dist\ShapeRack-$Version-windows-x64.zip"
