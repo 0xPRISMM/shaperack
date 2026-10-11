@@ -26,7 +26,7 @@ jobs:
         run: cargo xtask bundle shaperack --release --locked
       - name: Validate exported CLAP binary
         run: python scripts/validate_clap.py target/bundled/ShapeRack.clap
-      - name: Validate VST3 factory
+      - name: Validate exported VST3 audio and factory
         run: python scripts/validate_vst3.py target/bundled/ShapeRack.vst3
       - name: Package Windows binaries
         run: powershell -NoProfile -File scripts/package.ps1

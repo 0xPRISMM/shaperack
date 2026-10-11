@@ -1,6 +1,6 @@
 [package]
 name = "shaperack"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "A drawable, tempo-synced modulation rack for VST3 and CLAP hosts"
 license = "GPL-3.0-or-later"
@@ -24,6 +24,11 @@ exclude = ["vendor/nih-plug", "vendor/nih-plug/nih_plug_derive", "vendor/nih-plu
 [dependencies]
 nih_plug = { path = "vendor/nih-plug" }
 nih_plug_egui = { path = "vendor/nih-plug/nih_plug_egui" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.17.2", default-features = false }
 
 [profile.release]
 lto = "thin"

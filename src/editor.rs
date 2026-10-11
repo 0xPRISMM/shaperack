@@ -1,6 +1,6 @@
 //! Native, host-automatable curve editor. The audio callback never touches UI state.
 
-use crate::dsp::{Curve, Preset, SEGMENT_COUNT};
+use crate::dsp::{Curve, Interpolation, Preset, POINT_COUNT, SEGMENT_COUNT};
 use crate::params::{CurveStyle, Division, ModuleParams, ShapeRackParams};
 use crate::Meters;
 use nih_plug::prelude::*;
@@ -33,12 +33,59 @@ const DESCRIPTIONS: [&str; 4] = [
 #[derive(Default)]
 struct UiState {
     module: usize,
-    nodes_mode: bool,
+    tool: CurveTool,
+    snap: ValueGrid,
     gesture_module: Option<usize>,
     previous: Option<(usize, f32)>,
     node: Option<usize>,
+    node_origin: Option<(f32, f32)>,
+    bend_segment: Option<usize>,
+    bend_origin: Option<(f32, f32)>,
+    line_anchor: Option<(usize, f32)>,
+    curve_start: Option<Curve>,
+    curve_preview: Option<Curve>,
+    curve_just_finished: bool,
+    history: [CurveHistory; 4],
+    copied_curve: Option<Curve>,
+    preset_ui: crate::presets::PresetUiState,
+    select_module_after_load: bool,
     slider_drag: Option<SliderDrag>,
     value_entry: Option<ValueEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CurveTool {
+    #[default]
+    Nodes,
+    Draw,
+    Line,
+    Bend,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ValueGrid {
+    #[default]
+    Off,
+    Quarter,
+    Eighth,
+    Sixteenth,
+}
+
+impl ValueGrid {
+    fn divisions(self) -> Option<f32> {
+        match self {
+            Self::Off => None,
+            Self::Quarter => Some(4.0),
+            Self::Eighth => Some(8.0),
+            Self::Sixteenth => Some(16.0),
+        }
+    }
+}
+
+#[derive(Default)]
+struct CurveHistory {
+    undo: Vec<Curve>,
+    redo: Vec<Curve>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,35 +120,12 @@ pub fn create(params: Arc<ShapeRackParams>, meters: Arc<Meters>) -> Option<Box<d
         editor_state.clone(),
         state,
         |context, _| {
-            let mut style = (*context.style()).clone();
-            style.visuals = egui::Visuals::dark();
-            style.visuals.panel_fill = BACKGROUND;
-            style.visuals.window_fill = PANEL;
-            style.visuals.extreme_bg_color = BACKGROUND;
-            style.visuals.override_text_color = Some(TEXT);
-            style.visuals.selection.bg_fill = MINT.gamma_multiply(0.22);
-            style.visuals.selection.stroke = Stroke::new(1.0_f32, MINT);
-            style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 43, 56);
-            style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(46, 57, 71);
-            style.visuals.widgets.active.bg_fill = Color32::from_rgb(55, 69, 82);
-            style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-            style.spacing.item_spacing = vec2(8.0, 7.0);
-            style.spacing.button_padding = vec2(12.0, 7.0);
-            style.spacing.interact_size = vec2(40.0, 28.0);
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, FontId::proportional(13.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Small, FontId::proportional(11.0));
-            context.set_style(style);
+            configure_style(context);
         },
         move |context, setter, state| {
             let mut locked_state = state.lock().unwrap_or_else(|error| error.into_inner());
             let state = &mut *locked_state;
+            state.curve_just_finished = false;
             // Finish every point's automation gesture even if release occurs outside the canvas.
             if state.gesture_module.is_some()
                 && !context.input(|input| input.pointer.primary_down())
@@ -114,33 +138,7 @@ pub fn create(params: Arc<ShapeRackParams>, meters: Arc<Meters>) -> Option<Box<d
             ResizableWindow::new("shaperack-window")
                 .min_size(vec2(820.0, 620.0))
                 .show(context, editor_state.as_ref(), |ui| {
-                    egui::Frame::NONE.inner_margin(12.0).show(ui, |ui| {
-                        header(ui, &params, &meters, setter);
-                        ui.add_space(12.0);
-                        module_tabs(ui, &params, state);
-                        ui.add_space(12.0);
-                        curve_section(ui, &params, &meters, setter, state);
-                        ui.add_space(12.0);
-                        global_controls(ui, &params, setter, state);
-                        ui.add_space(7.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Curve modulation · VST3 / CLAP")
-                                    .small()
-                                    .color(MUTED),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new("Drag corner to resize  ↘")
-                                            .small()
-                                            .color(MUTED),
-                                    );
-                                },
-                            );
-                        });
-                    });
+                    draw_editor_contents(ui, &params, &meters, setter, state);
                 });
             context.request_repaint_after(Duration::from_millis(16));
         },
@@ -150,6 +148,82 @@ pub fn create(params: Arc<ShapeRackParams>, meters: Arc<Meters>) -> Option<Box<d
         params: wrapper_params,
         state: wrapper_state,
     }))
+}
+
+fn configure_style(context: &egui::Context) {
+    let mut style = (*context.style()).clone();
+    style.visuals = egui::Visuals::dark();
+    style.visuals.panel_fill = BACKGROUND;
+    style.visuals.window_fill = PANEL;
+    style.visuals.extreme_bg_color = BACKGROUND;
+    style.visuals.override_text_color = Some(TEXT);
+    style.visuals.selection.bg_fill = MINT.gamma_multiply(0.22);
+    style.visuals.selection.stroke = Stroke::new(1.0_f32, MINT);
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 43, 56);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(46, 57, 71);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(55, 69, 82);
+    style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
+    style.spacing.item_spacing = vec2(8.0, 7.0);
+    style.spacing.button_padding = vec2(12.0, 7.0);
+    style.spacing.interact_size = vec2(40.0, 28.0);
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, FontId::proportional(13.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, FontId::proportional(11.0));
+    context.set_style(style);
+}
+
+fn draw_editor_contents(
+    ui: &mut egui::Ui,
+    params: &Arc<ShapeRackParams>,
+    meters: &Meters,
+    setter: &ParamSetter,
+    state: &mut UiState,
+) -> Rect {
+    if state.select_module_after_load {
+        state.module = (0..4)
+            .find(|&index| params.module(index).enabled.value())
+            .unwrap_or(0);
+        state.select_module_after_load = false;
+    }
+    egui::Frame::NONE
+        .inner_margin(12.0)
+        .show(ui, |ui| {
+            header(ui, params, meters, setter);
+            ui.add_space(4.0);
+            if crate::presets::show_controls(ui, params, setter, &mut state.preset_ui) {
+                state.history = std::array::from_fn(|_| CurveHistory::default());
+                state.select_module_after_load = true;
+            }
+            ui.add_space(8.0);
+            module_tabs(ui, params, state);
+            ui.add_space(9.0);
+            curve_section(ui, params, meters, setter, state);
+            ui.add_space(12.0);
+            global_controls(ui, params, setter, state);
+            ui.add_space(7.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Curve modulation · VST3 / CLAP")
+                        .small()
+                        .color(MUTED),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("Drag corner to resize  ↘")
+                            .small()
+                            .color(MUTED),
+                    );
+                });
+            });
+        })
+        .response
+        .rect
 }
 
 /// The host drops this handle on the GUI thread. Ending gestures here also covers
@@ -243,15 +317,24 @@ fn header(ui: &mut egui::Ui, params: &ShapeRackParams, meters: &Meters, setter: 
             );
             ui.add_space(8.0);
             let playing = meters.playing.load(Ordering::Relaxed);
+            let synced = params.sync.value();
             ui.label(
-                RichText::new(if playing {
-                    "● PLAYING"
+                RichText::new(if !synced {
+                        "FREE RUNNING"
+                } else if playing {
+                        "SYNC PLAYING"
                 } else {
-                    "● STOPPED"
+                        "SYNC PREVIEW"
                 })
                 .small()
-                .color(if playing { MINT } else { MUTED }),
-            );
+                .color(if playing || !synced { MINT } else { LAVENDER }),
+            ).on_hover_text(if !synced {
+                "Modulation runs at the selected rate in Hz, independently of song playback."
+            } else if playing {
+                "Modulation follows the project tempo and aligns with song position when the host provides it."
+            } else {
+                "Modulation keeps cycling at the project tempo for note previews. Starting playback realigns it with the song."
+            });
             ui.add_space(8.0);
             let tempo = meters.tempo.load(Ordering::Relaxed);
             ui.label(
@@ -307,7 +390,7 @@ fn module_tabs(ui: &mut egui::Ui, params: &ShapeRackParams, state: &mut UiState)
             let color = COLORS[index];
             let selected = state.module == index;
             let enabled = module.enabled.value();
-            let label = format!("{}  {}", if enabled { "●" } else { "○" }, NAMES[index]);
+            let label = NAMES[index];
             let button =
                 egui::Button::new(RichText::new(label).strong().color(if selected || enabled {
                     color
@@ -327,10 +410,25 @@ fn module_tabs(ui: &mut egui::Ui, params: &ShapeRackParams, state: &mut UiState)
                         Color32::from_rgb(37, 46, 60)
                     },
                 ));
-            if ui
-                .add_sized(vec2(width, 40.0), button)
-                .on_hover_text(DESCRIPTIONS[index])
-                .clicked()
+            let response = ui.add_sized(vec2(width, 40.0), button);
+            let led = pos2(response.rect.left() + 15.0, response.rect.center().y);
+            ui.painter().circle_filled(
+                led,
+                3.0,
+                if enabled {
+                    color
+                } else {
+                    MUTED.gamma_multiply(0.4)
+                },
+            );
+            ui.painter().text(
+                pos2(response.rect.right() - 11.0, response.rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                if enabled { "ON" } else { "OFF" },
+                FontId::monospace(9.0),
+                if enabled { color } else { MUTED },
+            );
+            if response.on_hover_text(DESCRIPTIONS[index]).clicked()
                 && state.gesture_module.is_none()
             {
                 state.module = index;
@@ -355,13 +453,7 @@ fn curve_section(
                 .strong()
                 .color(color),
         );
-        toggle_button(
-            ui,
-            &module.enabled,
-            setter,
-            "Enabled",
-            "Activate this module in the rack.",
-        );
+        module_power_button(ui, module, setter, state.module);
         ui.label(RichText::new("Amount").color(MUTED));
         host_slider(
             ui,
@@ -379,16 +471,29 @@ fn curve_section(
             ] {
                 if ui
                     .selectable_label(module.style.value() == style, label)
+                    .on_hover_text(match style {
+                        CurveStyle::Linear => {
+                            "Straight interpolation. Segment bends still shape the transition."
+                        }
+                        CurveStyle::Smooth => {
+                            "Ease smoothly through each segment; bend handles adjust its timing."
+                        }
+                        CurveStyle::Step => {
+                            "Hold each value until the next point. Segment bends are ignored."
+                        }
+                    })
                     .clicked()
                 {
-                    set_discrete(setter, &module.style, style);
+                    let mut curve = module.curve();
+                    curve.interpolation = style.interpolation();
+                    apply_curve_edit(module, setter, state, curve);
                 }
             }
         });
     });
     ui.add_space(5.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Start with").small().color(MUTED));
+        ui.label(RichText::new("Shape").small().color(MUTED));
         for (preset, label) in [
             (Preset::Pump, "Pump"),
             (Preset::Gate, "Gate"),
@@ -396,30 +501,299 @@ fn curve_section(
             (Preset::Ramp, "Ramp"),
             (Preset::Flat, "Flat"),
         ] {
-            if ui.small_button(label).clicked() {
-                apply_preset(module, setter, preset);
+            if ui.small_button(label).on_hover_text("Replace only this module's curve. Your rack settings stay as they are.").clicked() {
+                apply_curve_edit(module, setter, state, Curve::from_preset(preset));
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .selectable_label(state.nodes_mode, "Nodes")
-                .on_hover_text("Drag one of the 17 curve values.")
-                .clicked()
-            {
-                state.nodes_mode = true;
-            }
-            if ui
-                .selectable_label(!state.nodes_mode, "Draw")
-                .on_hover_text("Paint across the grid to redraw several points.")
-                .clicked()
-            {
-                state.nodes_mode = false;
-            }
+            let index = state.module;
+            if ui.add_enabled(!state.history[index].redo.is_empty(), egui::Button::new("Redo").small()).on_hover_text("Redo this module's curve edit").clicked() { redo_curve(module, setter, state); }
+            if ui.add_enabled(!state.history[index].undo.is_empty(), egui::Button::new("Undo").small()).on_hover_text("Undo this module's curve edit").clicked() { undo_curve(module, setter, state); }
+            curve_tools_menu(ui, module, setter, state);
+            egui::ComboBox::from_id_salt("value-grid").width(70.0).selected_text(match state.snap { ValueGrid::Off => "Off", ValueGrid::Quarter => "1/4", ValueGrid::Eighth => "1/8", ValueGrid::Sixteenth => "1/16" }).show_ui(ui, |ui| {
+                for (grid, label) in [(ValueGrid::Off, "Off"), (ValueGrid::Quarter, "1/4"), (ValueGrid::Eighth, "1/8"), (ValueGrid::Sixteenth, "1/16")] {
+                    ui.selectable_value(&mut state.snap, grid, label);
+                }
+            }).response.on_hover_text("Snap vertical curve values to a grid. Control enables temporary quarter snapping; Shift bypasses snapping.");
+            ui.label(RichText::new("Snap").small().color(MUTED));
+            egui::ComboBox::from_id_salt("edit-tool").width(74.0).selected_text(match state.tool { CurveTool::Nodes => "Nodes", CurveTool::Draw => "Draw", CurveTool::Line => "Line", CurveTool::Bend => "Bend" }).show_ui(ui, |ui| {
+                for (tool, name, tooltip) in [
+                    (CurveTool::Nodes, "Nodes", "Drag fixed grid points vertically. Shift-drag for fine changes. Double-click a point to blend it into its neighbours."),
+                    (CurveTool::Draw, "Draw", "Paint across the graph to redraw points. Crossed grid values are filled in automatically."),
+                    (CurveTool::Line, "Line", "Draw a straight line from your first point to the current pointer. Release to keep it."),
+                    (CurveTool::Bend, "Bend", "Drag segment diamonds vertically. Double-click to straighten. Alt-drag also bends from other tools. Bending a Step curve switches it to Linear."),
+                ] {
+                    ui.selectable_value(&mut state.tool, tool, name).on_hover_text(tooltip);
+                }
+            }).response.on_hover_text("Choose how to edit this curve. Time positions stay on the 1/16 grid.");
+            ui.label(RichText::new("Edit").small().color(MUTED));
         });
     });
-    ui.add_space(7.0);
-    let graph_height = (ui.available_height() - 173.0).max(165.0);
-    draw_canvas(ui, params, meters, setter, state, graph_height);
+    ui.add_space(5.0);
+    let graph_height = (ui.available_height() - 209.0).max(145.0);
+    let _ = draw_canvas(ui, params, meters, setter, state, graph_height);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(match state.tool {
+                CurveTool::Nodes => {
+                    "Drag points  ·  Alt-drag bends  ·  Shift = fine  ·  Ctrl = snap"
+                }
+                CurveTool::Draw => "Paint a curve  ·  Ctrl = snap  ·  Shift bypasses snap",
+                CurveTool::Line => "Drag from start to end to draw a line  ·  Ctrl = snap",
+                CurveTool::Bend => {
+                    "Drag diamonds to bend  ·  Double-click = straighten  ·  Shift = fine"
+                }
+            })
+            .small()
+            .color(MUTED),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new(if module.enabled.value() {
+                    "17 points · 16 segments"
+                } else {
+                    "Module is off · enable to hear edits"
+                })
+                .small()
+                .color(if module.enabled.value() { MUTED } else { color }),
+            );
+        });
+    });
+}
+
+fn curve_tools_menu(
+    ui: &mut egui::Ui,
+    module: &ModuleParams,
+    setter: &ParamSetter,
+    state: &mut UiState,
+) {
+    ui.menu_button("Tools", |ui| {
+        if ui
+            .button("Copy curve")
+            .on_hover_text("Copy this module's points, bends, and interpolation.")
+            .clicked()
+        {
+            state.copied_curve = Some(module.curve());
+            ui.close_menu();
+        }
+        if ui
+            .add_enabled(
+                state.copied_curve.is_some(),
+                egui::Button::new("Paste curve"),
+            )
+            .clicked()
+        {
+            if let Some(curve) = state.copied_curve {
+                apply_curve_edit(module, setter, state, curve);
+            }
+            ui.close_menu();
+        }
+        ui.separator();
+        let mut curve = module.curve();
+        if ui
+            .button("Invert vertically")
+            .on_hover_text("Turn peaks into dips without changing their timing.")
+            .clicked()
+        {
+            for point in &mut curve.points {
+                *point = 1.0 - *point;
+            }
+            apply_curve_edit(module, setter, state, curve);
+            ui.close_menu();
+        }
+        if ui
+            .button("Reverse in time")
+            .on_hover_text("Mirror the points and bends across the cycle.")
+            .clicked()
+        {
+            curve.points.reverse();
+            curve.tensions.reverse();
+            for tension in &mut curve.tensions {
+                *tension = -*tension;
+            }
+            apply_curve_edit(module, setter, state, curve);
+            ui.close_menu();
+        }
+        if ui
+            .button("Smooth points")
+            .on_hover_text("Soften abrupt changes while keeping both endpoints.")
+            .clicked()
+        {
+            let original = curve.points;
+            for index in 1..SEGMENT_COUNT {
+                curve.points[index] =
+                    original[index - 1] * 0.25 + original[index] * 0.5 + original[index + 1] * 0.25;
+            }
+            curve.tensions.fill(0.0);
+            curve.interpolation = Interpolation::Smooth;
+            apply_curve_edit(module, setter, state, curve);
+            ui.close_menu();
+        }
+        if ui.button("Clear segment bends").clicked() {
+            curve.tensions.fill(0.0);
+            apply_curve_edit(module, setter, state, curve);
+            ui.close_menu();
+        }
+        if ui
+            .button("Flatten to neutral")
+            .on_hover_text("Set a flat, open volume/filter curve, centered pan, or clean drive.")
+            .clicked()
+        {
+            curve.points.fill(match state.module {
+                2 => 0.5,
+                3 => 0.0,
+                _ => 1.0,
+            });
+            curve.tensions.fill(0.0);
+            curve.interpolation = Interpolation::Linear;
+            apply_curve_edit(module, setter, state, curve);
+            ui.close_menu();
+        }
+    });
+}
+
+fn paint_points(points: &mut [f32; POINT_COUNT], start: (usize, f32), end: (usize, f32)) {
+    for (node, point) in points
+        .iter_mut()
+        .enumerate()
+        .take(start.0.max(end.0) + 1)
+        .skip(start.0.min(end.0))
+    {
+        let t = if start.0 == end.0 {
+            1.0
+        } else {
+            (node as f32 - start.0 as f32) / (end.0 as f32 - start.0 as f32)
+        };
+        *point = (start.1 + (end.1 - start.1) * t).clamp(0.0, 1.0);
+    }
+}
+
+fn clear_tensions_between(tensions: &mut [f32; SEGMENT_COUNT], first: usize, last: usize) {
+    tensions[first.min(last)..first.max(last)].fill(0.0);
+}
+
+fn snap_value(value: f32, grid: ValueGrid, modifiers: egui::Modifiers) -> f32 {
+    let divisions = if modifiers.shift {
+        None
+    } else if modifiers.command && grid == ValueGrid::Off {
+        Some(4.0)
+    } else {
+        grid.divisions()
+    };
+    let value = value.clamp(0.0, 1.0);
+    divisions
+        .map(|divisions| (value * divisions).round() / divisions)
+        .unwrap_or(value)
+}
+
+fn graph_value(rect: Rect, pointer_y: f32, grid: ValueGrid, modifiers: egui::Modifiers) -> f32 {
+    snap_value(
+        1.0 - (pointer_y - rect.top()) / rect.height(),
+        grid,
+        modifiers,
+    )
+}
+
+fn curve_style(interpolation: Interpolation) -> CurveStyle {
+    match interpolation {
+        Interpolation::Linear => CurveStyle::Linear,
+        Interpolation::Smooth => CurveStyle::Smooth,
+        Interpolation::Step => CurveStyle::Step,
+    }
+}
+
+fn write_curve(module: &ModuleParams, setter: &ParamSetter, curve: Curve) {
+    for (point, value) in module.points.iter().zip(curve.points) {
+        set_discrete(setter, &point.value, value);
+    }
+    for (segment, value) in module.segments.iter().zip(curve.tensions) {
+        set_discrete(setter, &segment.tension, value);
+    }
+    set_discrete(setter, &module.style, curve_style(curve.interpolation));
+}
+
+fn remember_curve_edit(history: &mut CurveHistory, before: Curve, after: Curve) {
+    if before != after {
+        if history.undo.len() == 32 {
+            history.undo.remove(0);
+        }
+        history.undo.push(before);
+        history.redo.clear();
+    }
+}
+
+fn apply_curve_edit(
+    module: &ModuleParams,
+    setter: &ParamSetter,
+    state: &mut UiState,
+    curve: Curve,
+) {
+    if state.gesture_module.is_some() {
+        return;
+    }
+    remember_curve_edit(&mut state.history[state.module], module.curve(), curve);
+    write_curve(module, setter, curve);
+}
+
+fn undo_curve(module: &ModuleParams, setter: &ParamSetter, state: &mut UiState) {
+    if let Some(curve) = state.history[state.module].undo.pop() {
+        state.history[state.module].redo.push(module.curve());
+        write_curve(module, setter, curve);
+    }
+}
+
+fn redo_curve(module: &ModuleParams, setter: &ParamSetter, state: &mut UiState) {
+    if let Some(curve) = state.history[state.module].redo.pop() {
+        state.history[state.module].undo.push(module.curve());
+        write_curve(module, setter, curve);
+    }
+}
+
+fn begin_curve_gesture(
+    module: &ModuleParams,
+    setter: &ParamSetter,
+    state: &mut UiState,
+    curve: Curve,
+) {
+    for point in &module.points {
+        setter.begin_set_parameter(&point.value);
+    }
+    for segment in &module.segments {
+        setter.begin_set_parameter(&segment.tension);
+    }
+    setter.begin_set_parameter(&module.style);
+    state.gesture_module = Some(state.module);
+    state.curve_start = Some(curve);
+    state.curve_preview = Some(curve);
+    state.previous = None;
+    state.node = None;
+    state.node_origin = None;
+    state.line_anchor = None;
+    state.bend_segment = None;
+    state.bend_origin = None;
+}
+
+fn send_preview_curve(
+    module: &ModuleParams,
+    setter: &ParamSetter,
+    state: &mut UiState,
+    curve: Curve,
+) {
+    let previous = state.curve_preview.unwrap_or_else(|| module.curve());
+    for (index, value) in curve.points.iter().enumerate() {
+        if *value != previous.points[index] {
+            setter.set_parameter(&module.points[index].value, *value);
+        }
+    }
+    for (index, value) in curve.tensions.iter().enumerate() {
+        if *value != previous.tensions[index] {
+            setter.set_parameter(&module.segments[index].tension, *value);
+        }
+    }
+    if curve.interpolation != previous.interpolation {
+        setter.set_parameter(&module.style, curve_style(curve.interpolation));
+    }
+    state.curve_preview = Some(curve);
 }
 
 fn draw_canvas(
@@ -429,12 +803,12 @@ fn draw_canvas(
     setter: &ParamSetter,
     state: &mut UiState,
     height: f32,
-) {
+) -> egui::Response {
     let module = params.module(state.module);
     let accent = COLORS[state.module];
     let (outer, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
-    let rect = Rect::from_min_max(outer.min + vec2(38.0, 16.0), outer.max - vec2(18.0, 28.0));
+    let rect = canvas_plot_rect(outer);
     let painter = ui.painter_at(outer);
     painter.rect_filled(outer, 8.0, Color32::from_rgb(12, 17, 24));
     painter.rect_stroke(
@@ -444,42 +818,119 @@ fn draw_canvas(
         egui::StrokeKind::Inside,
     );
 
-    if response.is_pointer_button_down_on() && state.gesture_module.is_none() {
-        for point in &module.points {
-            setter.begin_set_parameter(&point.value);
-        }
-        state.gesture_module = Some(state.module);
-        state.previous = None;
-        state.node = None;
-    }
-    if state.gesture_module == Some(state.module) {
+    let modifiers = ui.input(|input| input.modifiers);
+    let down =
+        response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down());
+    if down && state.gesture_module.is_none() && state.slider_drag.is_none() {
         if let Some(position) = response.interact_pointer_pos() {
             let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            let value = (1.0 - (position.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
             let index = (x * SEGMENT_COUNT as f32).round() as usize;
-            if state.nodes_mode {
-                let node = *state.node.get_or_insert(index);
-                setter.set_parameter(&module.points[node].value, value);
-            } else {
-                if let Some((previous_index, previous_value)) = state.previous {
-                    let first = previous_index.min(index);
-                    let last = previous_index.max(index);
-                    for node in first..=last {
-                        let t = if previous_index == index {
-                            1.0
-                        } else {
-                            (node as f32 - previous_index as f32)
-                                / (index as f32 - previous_index as f32)
-                        };
-                        setter.set_parameter(
-                            &module.points[node].value,
-                            previous_value + (value - previous_value) * t,
-                        );
-                    }
+            let curve = module.curve();
+            begin_curve_gesture(module, setter, state, curve);
+            if state.tool == CurveTool::Bend || modifiers.alt {
+                let segment = ((x * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
+                state.bend_segment = Some(segment);
+                state.bend_origin = Some((position.y, curve.tensions[segment]));
+            } else if state.tool == CurveTool::Nodes {
+                state.node = Some(index);
+                let node_position = curve_position(
+                    rect,
+                    index as f32 / SEGMENT_COUNT as f32,
+                    curve.points[index],
+                );
+                let initial_value = if position.distance(node_position) <= 12.0 {
+                    curve.points[index]
                 } else {
-                    setter.set_parameter(&module.points[index].value, value);
+                    graph_value(rect, position.y, state.snap, modifiers)
+                };
+                state.node_origin = Some((position.y, initial_value));
+            } else if state.tool == CurveTool::Line {
+                state.line_anchor =
+                    Some((index, graph_value(rect, position.y, state.snap, modifiers)));
+            }
+        }
+    }
+    if down && state.gesture_module == Some(state.module) {
+        if let Some(position) = response.interact_pointer_pos() {
+            let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let index = (x * SEGMENT_COUNT as f32).round() as usize;
+            let value = graph_value(rect, position.y, state.snap, modifiers);
+            let mut curve = state.curve_preview.unwrap_or_else(|| module.curve());
+            if let (Some(segment), Some((initial_y, initial_tension))) =
+                (state.bend_segment, state.bend_origin)
+            {
+                let rising = curve.points[segment + 1] >= curve.points[segment];
+                let polarity = if rising { 1.0 } else { -1.0 };
+                let sensitivity = if modifiers.shift { 0.3 } else { 2.8 };
+                curve.tensions[segment] = (initial_tension
+                    + (initial_y - position.y) / rect.height() * polarity * sensitivity)
+                    .clamp(-1.0, 1.0);
+                if curve.interpolation == Interpolation::Step {
+                    curve.interpolation = Interpolation::Linear;
                 }
+            } else if let (Some(node), Some((initial_y, initial_value))) =
+                (state.node, state.node_origin)
+            {
+                let sensitivity = if modifiers.shift { 0.15 } else { 1.0 };
+                let value = initial_value + (initial_y - position.y) / rect.height() * sensitivity;
+                curve.points[node] = snap_value(value, state.snap, modifiers);
+            } else if let Some(anchor) = state.line_anchor {
+                curve = state.curve_start.unwrap_or(curve);
+                paint_points(&mut curve.points, anchor, (index, value));
+                clear_tensions_between(&mut curve.tensions, anchor.0, index);
+                curve.interpolation = Interpolation::Linear;
+            } else {
+                let previous = state.previous.unwrap_or((index, value));
+                paint_points(&mut curve.points, previous, (index, value));
+                clear_tensions_between(&mut curve.tensions, previous.0, index);
                 state.previous = Some((index, value));
+            }
+            send_preview_curve(module, setter, state, curve);
+        }
+    }
+
+    let curve = state
+        .curve_preview
+        .filter(|_| state.gesture_module == Some(state.module))
+        .unwrap_or_else(|| module.curve());
+    if response.double_clicked() && state.gesture_module.is_none() {
+        if let Some(position) = response.interact_pointer_pos() {
+            let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let mut edited = curve;
+            if state.tool == CurveTool::Bend || modifiers.alt {
+                let segment = ((x * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
+                edited.tensions[segment] = 0.0;
+            } else if state.tool == CurveTool::Nodes {
+                let node = (x * SEGMENT_COUNT as f32).round() as usize;
+                if node > 0 && node < SEGMENT_COUNT {
+                    edited.points[node] = (curve.points[node - 1] + curve.points[node + 1]) * 0.5;
+                }
+                if node > 0 {
+                    edited.tensions[node - 1] = 0.0;
+                }
+                if node < SEGMENT_COUNT {
+                    edited.tensions[node] = 0.0;
+                }
+            }
+            apply_curve_edit(module, setter, state, edited);
+        }
+    } else if response.clicked()
+        && state.gesture_module.is_none()
+        && !state.curve_just_finished
+        && state.tool != CurveTool::Bend
+        && !modifiers.alt
+    {
+        if let Some(position) = response.interact_pointer_pos() {
+            let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let node = (x * SEGMENT_COUNT as f32).round() as usize;
+            let node_position =
+                curve_position(rect, node as f32 / SEGMENT_COUNT as f32, curve.points[node]);
+            if state.tool != CurveTool::Nodes || position.distance(node_position) > 12.0 {
+                let mut edited = curve;
+                edited.points[node] = graph_value(rect, position.y, state.snap, modifiers);
+                if edited != curve {
+                    apply_curve_edit(module, setter, state, edited);
+                }
             }
         }
     }
@@ -502,7 +953,7 @@ fn draw_canvas(
             painter.text(
                 pos2(x, rect.bottom() + 8.0),
                 egui::Align2::CENTER_TOP,
-                format!("{}%", index * 100 / SEGMENT_COUNT),
+                ["0", "¼", "½", "¾", "1 cycle"][index / 4],
                 FontId::proportional(10.0),
                 MUTED,
             );
@@ -517,16 +968,58 @@ fn draw_canvas(
         painter.text(
             pos2(rect.left() - 8.0, y),
             egui::Align2::RIGHT_CENTER,
-            format!("{}", 100 - index * 25),
+            match state.module {
+                1 if index == 0 => "Open".to_owned(),
+                1 if index == 4 => "Dark".to_owned(),
+                2 if index == 0 => "R".to_owned(),
+                2 if index == 2 => "C".to_owned(),
+                2 if index == 4 => "L".to_owned(),
+                2 => if index == 1 { "+50" } else { "−50" }.to_owned(),
+                _ => format!("{}", 100 - index * 25),
+            },
             FontId::proportional(10.0),
             MUTED,
         );
     }
 
-    let curve = module.curve();
+    painter.text(
+        pos2(rect.left(), outer.top() + 5.0),
+        egui::Align2::LEFT_TOP,
+        ["Gain", "Cutoff", "Balance", "Saturation"][state.module],
+        FontId::proportional(10.0),
+        MUTED,
+    );
+    painter.text(
+        pos2(rect.right(), outer.top() + 5.0),
+        egui::Align2::RIGHT_TOP,
+        "1/16 time grid",
+        FontId::proportional(10.0),
+        MUTED,
+    );
+    if let Some(node) = state
+        .node
+        .filter(|_| state.gesture_module == Some(state.module))
+    {
+        let position = curve_position(rect, node as f32 / SEGMENT_COUNT as f32, curve.points[node]);
+        let guide = Stroke::new(1.0_f32, accent.gamma_multiply(0.28));
+        painter.line_segment(
+            [
+                pos2(position.x, rect.top()),
+                pos2(position.x, rect.bottom()),
+            ],
+            guide,
+        );
+        painter.line_segment(
+            [
+                pos2(rect.left(), position.y),
+                pos2(rect.right(), position.y),
+            ],
+            guide,
+        );
+    }
     // Draw using the same evaluator as the DSP, including exact step corners.
     let mut line = Vec::with_capacity(SEGMENT_COUNT * 17 + 1);
-    if module.style.value() == CurveStyle::Step {
+    if curve.interpolation == Interpolation::Step {
         for index in 0..SEGMENT_COUNT {
             let x = index as f32 / SEGMENT_COUNT as f32;
             let next_x = (index + 1) as f32 / SEGMENT_COUNT as f32;
@@ -558,6 +1051,18 @@ fn draw_canvas(
         Stroke::new(6.0_f32, accent.gamma_multiply(0.08)),
     ));
     painter.add(egui::Shape::line(line, Stroke::new(2.2_f32, accent)));
+    if let Some(segment) = state
+        .bend_segment
+        .filter(|_| state.gesture_module == Some(state.module))
+    {
+        let emphasized: Vec<_> = (0..=32)
+            .map(|sample| {
+                let phase = (segment as f32 + sample as f32 / 32.0) / SEGMENT_COUNT as f32;
+                curve_position(rect, phase, curve.value(phase as f64))
+            })
+            .collect();
+        painter.add(egui::Shape::line(emphasized, Stroke::new(3.3_f32, TEXT)));
+    }
     let phase = meters.phase.load(Ordering::Relaxed).clamp(0.0, 1.0);
     let x = rect.left() + phase * rect.width();
     painter.line_segment(
@@ -584,14 +1089,80 @@ fn draw_canvas(
             Stroke::new(if hovered { 2.0_f32 } else { 1.3_f32 }, accent),
         );
     }
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    let bending = state.tool == CurveTool::Bend || modifiers.alt || state.bend_segment.is_some();
+    if bending {
+        let hover_segment = response
+            .hover_pos()
+            .map(|position| {
+                (((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * SEGMENT_COUNT as f32)
+                    as usize
+            })
+            .map(|index| index.min(SEGMENT_COUNT - 1));
+        for segment in 0..SEGMENT_COUNT {
+            let phase = (segment as f32 + 0.5) / SEGMENT_COUNT as f32;
+            let position = curve_position(rect, phase, curve.value(phase as f64));
+            let highlighted = state.bend_segment == Some(segment) || hover_segment == Some(segment);
+            let size = if highlighted { 5.0 } else { 3.5 };
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    position + vec2(0.0, -size),
+                    position + vec2(size, 0.0),
+                    position + vec2(0.0, size),
+                    position + vec2(-size, 0.0),
+                ],
+                if highlighted { accent } else { PANEL },
+                Stroke::new(1.0_f32, accent),
+            ));
+        }
     }
-    response.on_hover_text(if state.nodes_mode {
-        "Drag to edit a point. Switch to Draw to paint a curve."
-    } else {
-        "Drag across the canvas to draw. Each module keeps its own curve."
-    });
+    if let Some(position) = response.hover_pos() {
+        let phase = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let segment = ((phase * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
+        let text = if bending {
+            format!(
+                "Segment {} · bend {:+.2}",
+                segment + 1,
+                curve.tensions[segment]
+            )
+        } else if state.module == 2 {
+            format!(
+                "Balance {:+.0}% · cycle {:.0}%",
+                (curve.value(phase as f64) * 2.0 - 1.0) * 100.0,
+                phase * 100.0
+            )
+        } else {
+            format!(
+                "Value {:.0}% · cycle {:.0}%",
+                curve.value(phase as f64) * 100.0,
+                phase * 100.0
+            )
+        };
+        painter.text(
+            pos2(rect.center().x, outer.top() + 5.0),
+            egui::Align2::CENTER_TOP,
+            text,
+            FontId::monospace(10.0),
+            accent,
+        );
+    }
+    if response.hovered() {
+        ui.ctx()
+            .set_cursor_icon(if bending || state.tool == CurveTool::Nodes {
+                egui::CursorIcon::ResizeVertical
+            } else {
+                egui::CursorIcon::Crosshair
+            });
+    }
+    response.on_hover_text(match state.tool {
+        CurveTool::Nodes => "Drag fixed grid points vertically. Shift = fine, Control = snap, Alt = bend. Double-click a point to blend it into its neighbours.",
+        CurveTool::Draw => "Paint across the 1/16 grid. Control = snap, Shift bypasses snapping. Each module keeps its own points and bends.",
+        CurveTool::Line => "Drag a straight line across grid points. Line clears bends along the edited span and uses Linear interpolation.",
+        CurveTool::Bend => "Drag segment diamonds vertically to bend. Double-click a segment to straighten. Step switches to Linear when you bend it.",
+    })
+}
+
+fn canvas_plot_rect(outer: Rect) -> Rect {
+    Rect::from_min_max(outer.min + vec2(44.0, 21.0), outer.max - vec2(18.0, 25.0))
 }
 
 fn curve_position(rect: Rect, x: f32, y: f32) -> egui::Pos2 {
@@ -618,6 +1189,11 @@ fn global_controls(
                     for (value, label) in [(true, "Sync"), (false, "Free")] {
                         if ui
                             .selectable_label(params.sync.value() == value, label)
+                            .on_hover_text(if value {
+                                "Follow the project tempo. Stopped note previews keep cycling; playback aligns with the song."
+                            } else {
+                                "Choose an independent modulation speed in Hz."
+                            })
                             .clicked()
                         {
                             set_discrete(setter, &params.sync, value);
@@ -921,33 +1497,86 @@ fn toggle_button(
     }
 }
 
+fn module_power_button(
+    ui: &mut egui::Ui,
+    module: &ModuleParams,
+    setter: &ParamSetter,
+    index: usize,
+) {
+    let enabled = module.enabled.value();
+    let accent = COLORS[index];
+    let label = format!("{} {}", NAMES[index], if enabled { "ON" } else { "OFF" });
+    let response = ui.add_sized(
+        vec2(112.0, 28.0),
+        egui::Button::new(RichText::new(label).strong().color(if enabled {
+            accent
+        } else {
+            MUTED
+        }))
+        .fill(if enabled {
+            accent.gamma_multiply(0.18)
+        } else {
+            PANEL
+        })
+        .stroke(Stroke::new(
+            1.0_f32,
+            if enabled {
+                accent
+            } else {
+                MUTED.gamma_multiply(0.35)
+            },
+        )),
+    );
+    ui.painter().circle_filled(
+        pos2(response.rect.left() + 9.0, response.rect.center().y),
+        3.0,
+        if enabled {
+            accent
+        } else {
+            MUTED.gamma_multiply(0.4)
+        },
+    );
+    if response
+        .on_hover_text(format!(
+            "Click to turn {} {}.",
+            NAMES[index],
+            if enabled { "off" } else { "on" }
+        ))
+        .clicked()
+    {
+        set_discrete(setter, &module.enabled, !enabled);
+    }
+}
+
 fn set_discrete<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
     setter.begin_set_parameter(param);
     setter.set_parameter(param, value);
     setter.end_set_parameter(param);
 }
 
-fn apply_preset(module: &ModuleParams, setter: &ParamSetter, preset: Preset) {
-    let curve = Curve::from_preset(preset);
-    for (point, value) in module.points.iter().zip(curve.points) {
-        set_discrete(setter, &point.value, value);
-    }
-    let style = match curve.interpolation {
-        crate::dsp::Interpolation::Linear => CurveStyle::Linear,
-        crate::dsp::Interpolation::Smooth => CurveStyle::Smooth,
-        crate::dsp::Interpolation::Step => CurveStyle::Step,
-    };
-    set_discrete(setter, &module.style, style);
-}
-
 fn end_curve_gesture(params: &ShapeRackParams, setter: &ParamSetter, state: &mut UiState) {
     if let Some(index) = state.gesture_module.take() {
-        for point in &params.module(index).points {
+        state.curve_just_finished = true;
+        let module = params.module(index);
+        for point in &module.points {
             setter.end_set_parameter(&point.value);
+        }
+        for segment in &module.segments {
+            setter.end_set_parameter(&segment.tension);
+        }
+        setter.end_set_parameter(&module.style);
+        if let (Some(before), Some(after)) = (state.curve_start, state.curve_preview) {
+            remember_curve_edit(&mut state.history[index], before, after);
         }
     }
     state.previous = None;
     state.node = None;
+    state.node_origin = None;
+    state.line_anchor = None;
+    state.bend_segment = None;
+    state.bend_origin = None;
+    state.curve_start = None;
+    state.curve_preview = None;
 }
 
 #[cfg(test)]
@@ -992,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_editor_mid_drag_ends_only_active_modules_points_and_resets_gesture() {
+    fn closing_editor_mid_drag_ends_active_modules_points_bends_and_style() {
         let params = Arc::new(ShapeRackParams::default());
         let state = Arc::new(Mutex::new(UiState {
             gesture_module: Some(1),
@@ -1016,6 +1645,14 @@ mod tests {
             .points
             .iter()
             .map(|point| point.value.as_ptr())
+            .chain(
+                params
+                    .filter
+                    .segments
+                    .iter()
+                    .map(|segment| segment.tension.as_ptr()),
+            )
+            .chain(std::iter::once(params.filter.style.as_ptr()))
             .collect();
         assert_eq!(*context.ended.lock().unwrap(), expected);
         let state_guard = state.lock().unwrap();
@@ -1030,7 +1667,10 @@ mod tests {
             params,
             state,
         });
-        assert_eq!(context.ended.lock().unwrap().len(), crate::dsp::POINT_COUNT);
+        assert_eq!(
+            context.ended.lock().unwrap().len(),
+            POINT_COUNT + SEGMENT_COUNT + 1
+        );
     }
 
     #[derive(Default)]
@@ -1240,5 +1880,247 @@ mod tests {
             vec![params.smoothing.as_ptr()]
         );
         assert!(state.lock().unwrap().slider_drag.is_none());
+    }
+
+    fn canvas_frame(
+        context: &egui::Context,
+        params: &ShapeRackParams,
+        host: &SliderContext,
+        state: &mut UiState,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> Rect {
+        let mut outer = Rect::NOTHING;
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(540.0, 320.0))),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |context| {
+                let setter = ParamSetter::new(host);
+                state.curve_just_finished = false;
+                if !context.input(|input| input.pointer.primary_down()) {
+                    end_curve_gesture(params, &setter, state);
+                }
+                egui::CentralPanel::default().show(context, |ui| {
+                    outer = draw_canvas(ui, params, &Meters::default(), &setter, state, 280.0).rect;
+                });
+            },
+        );
+        canvas_plot_rect(outer)
+    }
+
+    #[test]
+    fn bend_drag_changes_segment_without_moving_nodes_and_release_outside_ends_every_gesture() {
+        let context = egui::Context::default();
+        let params = ShapeRackParams::default();
+        let host = SliderContext::default();
+        let mut state = UiState {
+            tool: CurveTool::Bend,
+            ..Default::default()
+        };
+        let modifiers = egui::Modifiers::default();
+        let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
+        let original = params.volume.curve();
+        let phase = 4.5 / SEGMENT_COUNT as f32;
+        let start = curve_position(plot, phase, original.value(phase as f64));
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(start),
+                button(start, true, modifiers),
+            ],
+            modifiers,
+        );
+        assert_eq!(
+            host.active.lock().unwrap().len(),
+            POINT_COUNT + SEGMENT_COUNT + 1
+        );
+        let dragged = start - vec2(0.0, 28.0);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(dragged)],
+            modifiers,
+        );
+        let preview = state.curve_preview.unwrap();
+        assert_eq!(preview.points, original.points);
+        assert!(preview.tensions[4] > original.tensions[4]);
+        assert!(preview.value(phase as f64) > original.value(phase as f64));
+        let outside = pos2(plot.right() + 100.0, plot.bottom() + 100.0);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(outside),
+                button(outside, false, modifiers),
+            ],
+            modifiers,
+        );
+        assert!(host.active.lock().unwrap().is_empty());
+        assert!(state.curve_preview.is_none());
+        assert_eq!(state.history[0].undo, vec![original]);
+        assert!(state.history[1].undo.is_empty());
+        assert!(*host.writes.lock().unwrap() > 0);
+    }
+
+    #[test]
+    fn line_tool_fills_crossed_nodes_and_rebuilds_from_original_anchor() {
+        let context = egui::Context::default();
+        let params = ShapeRackParams::default();
+        let host = SliderContext::default();
+        let mut state = UiState {
+            tool: CurveTool::Line,
+            ..Default::default()
+        };
+        let modifiers = egui::Modifiers::default();
+        let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
+        let original = params.volume.curve();
+        let start = curve_position(plot, 2.0 / SEGMENT_COUNT as f32, 0.9);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(start),
+                button(start, true, modifiers),
+            ],
+            modifiers,
+        );
+        let end = curve_position(plot, 10.0 / SEGMENT_COUNT as f32, 0.1);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(end)],
+            modifiers,
+        );
+        let preview = state.curve_preview.unwrap();
+        assert!((preview.points[2] - 0.9).abs() < 1e-5);
+        assert!((preview.points[6] - 0.5).abs() < 1e-5);
+        assert!((preview.points[10] - 0.1).abs() < 1e-5);
+        assert_eq!(preview.interpolation, Interpolation::Linear);
+        // Moving the endpoint back restores values outside the new line's extent.
+        let shorter = curve_position(plot, 6.0 / SEGMENT_COUNT as f32, 0.3);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(shorter)],
+            modifiers,
+        );
+        let preview = state.curve_preview.unwrap();
+        assert!((preview.points[4] - 0.6).abs() < 1e-5);
+        assert_eq!(preview.points[7..], original.points[7..]);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![button(shorter, false, modifiers)],
+            modifiers,
+        );
+        assert!(host.active.lock().unwrap().is_empty());
+        assert_eq!(state.history[0].undo.len(), 1);
+    }
+
+    #[test]
+    fn node_drag_stays_on_its_time_slot_and_control_snaps_values() {
+        let context = egui::Context::default();
+        let params = ShapeRackParams::default();
+        let host = SliderContext::default();
+        let mut state = UiState::default();
+        let modifiers = egui::Modifiers {
+            command: true,
+            ctrl: true,
+            ..Default::default()
+        };
+        let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
+        let original = params.volume.curve();
+        let start = curve_position(plot, 4.0 / SEGMENT_COUNT as f32, original.points[4]);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(start),
+                button(start, true, modifiers),
+            ],
+            modifiers,
+        );
+        let target = curve_position(plot, 10.0 / SEGMENT_COUNT as f32, 0.62);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(target)],
+            modifiers,
+        );
+        let preview = state.curve_preview.unwrap();
+        assert_eq!(preview.points[4], 0.5);
+        assert_eq!(preview.points[10], original.points[10]);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![button(target, false, modifiers)],
+            modifiers,
+        );
+        assert!(host.active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn editor_contents_fit_minimum_and_default_window_sizes() {
+        for size in [vec2(820.0, 620.0), vec2(960.0, 640.0)] {
+            let context = egui::Context::default();
+            configure_style(&context);
+            let params = Arc::new(ShapeRackParams::default());
+            let host = SliderContext::default();
+            let mut state = UiState::default();
+            let mut rect = Rect::NOTHING;
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+                    ..Default::default()
+                },
+                |context| {
+                    ResizableWindow::new("layout-test")
+                        .min_size(vec2(820.0, 620.0))
+                        .show(context, params.editor_state.as_ref(), |ui| {
+                            rect = draw_editor_contents(
+                                ui,
+                                &params,
+                                &Meters::default(),
+                                &ParamSetter::new(&host),
+                                &mut state,
+                            );
+                        });
+                },
+            );
+            assert!(
+                rect.max.x <= size.x + 1.0,
+                "horizontal overflow: {size:?} {rect:?}"
+            );
+            assert!(
+                rect.max.y <= size.y + 1.0,
+                "vertical overflow: {size:?} {rect:?}"
+            );
+            assert!(host.active.lock().unwrap().is_empty());
+        }
     }
 }

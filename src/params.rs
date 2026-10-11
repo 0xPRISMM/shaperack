@@ -1,4 +1,4 @@
-use crate::dsp::{Curve, Interpolation, Preset, POINT_COUNT};
+use crate::dsp::{Curve, Interpolation, Preset, POINT_COUNT, SEGMENT_COUNT};
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 use std::sync::Arc;
@@ -62,6 +62,12 @@ pub struct CurvePoint {
 }
 
 #[derive(Params)]
+pub struct CurveSegment {
+    #[id = "tension"]
+    pub tension: FloatParam,
+}
+
+#[derive(Params)]
 pub struct ModuleParams {
     #[id = "enabled"]
     pub enabled: BoolParam,
@@ -71,6 +77,8 @@ pub struct ModuleParams {
     pub style: EnumParam<CurveStyle>,
     #[nested(array)]
     pub points: [CurvePoint; POINT_COUNT],
+    #[nested(array)]
+    pub segments: [CurveSegment; SEGMENT_COUNT],
 }
 
 impl ModuleParams {
@@ -94,12 +102,23 @@ impl ModuleParams {
                     FloatRange::Linear { min: 0.0, max: 1.0 },
                 ),
             }),
+            segments: std::array::from_fn(|i| CurveSegment {
+                tension: FloatParam::new(
+                    format!("{name} bend {:02}", i + 1),
+                    0.0,
+                    FloatRange::Linear {
+                        min: -1.0,
+                        max: 1.0,
+                    },
+                ),
+            }),
         }
     }
 
     pub fn curve(&self) -> Curve {
         Curve {
             points: std::array::from_fn(|i| self.points[i].value.value()),
+            tensions: std::array::from_fn(|i| self.segments[i].tension.value()),
             interpolation: self.style.value().interpolation(),
         }
     }
@@ -109,6 +128,9 @@ impl ModuleParams {
 pub struct ShapeRackParams {
     #[persist = "editor-state"]
     pub editor_state: Arc<EguiState>,
+    /// GUI-only preset label; never access its lock from the audio callback.
+    #[persist = "preset-name"]
+    pub preset_name: Arc<std::sync::Mutex<String>>,
     #[id = "sync"]
     pub sync: BoolParam,
     #[id = "division"]
@@ -155,6 +177,7 @@ impl Default for ShapeRackParams {
     fn default() -> Self {
         Self {
             editor_state: EguiState::from_size(960, 640),
+            preset_name: Arc::new(std::sync::Mutex::new("Custom".to_string())),
             sync: BoolParam::new("Tempo sync", true),
             division: EnumParam::new("Cycle length", Division::Quarter),
             free_hz: FloatParam::new(

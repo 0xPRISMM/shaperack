@@ -4,8 +4,10 @@
 pub mod dsp;
 mod editor;
 pub mod params;
+mod preset_file;
+mod presets;
 
-use dsp::{PhaseClock, Rate, StereoLowpass, VolumeShaper};
+use dsp::{AntialiasedDrive, PhaseClock, Rate, StereoLowpass, VolumeShaper};
 use nih_plug::prelude::*;
 use params::ShapeRackParams;
 use std::sync::{
@@ -37,6 +39,7 @@ pub struct ShapeRack {
     clock: PhaseClock,
     volume: VolumeShaper,
     filter: StereoLowpass,
+    drive: AntialiasedDrive,
     sample_rate: f64,
     transition: f32,
     enable: [f32; 4],
@@ -53,6 +56,7 @@ impl Default for ShapeRack {
             clock: PhaseClock::new(44100.0),
             volume: VolumeShaper::new(44100.0),
             filter: StereoLowpass::new(44100.0),
+            drive: AntialiasedDrive::new(),
             sample_rate: 44100.0,
             transition: 0.0,
             enable: [1.0, 0.0, 0.0, 0.0],
@@ -118,6 +122,7 @@ impl Plugin for ShapeRack {
         self.clock.reset();
         self.volume.reset();
         self.filter.reset();
+        self.drive.reset();
         self.enable = std::array::from_fn(|i| {
             if self.params.module(i).enabled.value() {
                 1.0
@@ -167,14 +172,16 @@ impl ShapeRack {
                 hz: self.params.free_hz.value() as f64,
             }
         });
-        // The framework passes transport adjusted for each automation sub-block.
-        // This also realigns modulation after host seeks and loop wraps.
-        if synced {
+        // During playback the framework supplies the position for each
+        // automation sub-block, keeping seeks, loop wraps, and resume aligned.
+        // Stopped hosts may keep reporting the same position while previewing
+        // notes or routing live audio. Ignore that stationary playhead and let
+        // the tempo-based clock continue, so Pump/Gate cannot stay stuck shut.
+        if synced && playing {
             if let Some(beats) = beat_position {
                 self.clock.seek_beats(beats);
             }
         }
-        let advance = !synced || playing || beat_position.is_none();
         self.volume
             .set_smoothing_ms(self.params.smoothing.value() as f64);
         self.filter
@@ -255,10 +262,9 @@ impl ShapeRack {
                 self.drive_amount[i] =
                     target + modulation_coefficient * (self.drive_amount[i] - target);
             }
-            wet = (
-                dsp::soft_clip(wet.0, self.drive_amount[0]),
-                dsp::soft_clip(wet.1, self.drive_amount[1]),
-            );
+            wet =
+                self.drive
+                    .process_frame(wet.0, wet.1, self.drive_amount[0], self.drive_amount[1]);
             self.bypass_weight =
                 bypass_target + self.transition * (self.bypass_weight - bypass_target);
             if (self.bypass_weight - bypass_target).abs() < 1.0e-6 {
@@ -277,9 +283,9 @@ impl ShapeRack {
             if is_stereo {
                 peak = peak.max(out.1.abs());
             }
-            if advance {
-                self.clock.advance();
-            }
+            // Preview cycles also advance through silence. Audio activity does
+            // not retrigger the curve; the next playing block realigns to host.
+            self.clock.advance();
         }
         if self.params.editor_state.is_open() {
             let old = self.meters.peak.load(Ordering::Relaxed);

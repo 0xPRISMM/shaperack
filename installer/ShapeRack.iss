@@ -1,10 +1,10 @@
 ; Compile with Inno Setup 6.3 or newer. The PowerShell build script supplies
 ; AppVersion/FileVersion from Cargo.toml and an absolute RepoRoot.
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef FileVersion
-  #define FileVersion "0.1.1.0"
+  #define FileVersion "0.2.0.0"
 #endif
 #ifndef RepoRoot
   #define RepoRoot AddBackslash(SourcePath) + ".."

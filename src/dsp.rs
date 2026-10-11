@@ -29,6 +29,9 @@ pub struct Curve {
     /// Seventeen evenly spaced values, including the right-hand endpoint.
     /// Public for inexpensive parameter snapshots; evaluation sanitizes values.
     pub points: [f32; POINT_COUNT],
+    /// Per-segment bend in -1..1. Zero preserves the selected interpolation;
+    /// positive values approach the following point earlier in the segment.
+    pub tensions: [f32; SEGMENT_COUNT],
     pub interpolation: Interpolation,
 }
 
@@ -76,6 +79,7 @@ impl Curve {
         };
         Self {
             points,
+            tensions: [0.0; SEGMENT_COUNT],
             interpolation,
         }
     }
@@ -98,6 +102,14 @@ impl Curve {
         let amount = match self.interpolation {
             Interpolation::Smooth => fraction * fraction * (3.0 - 2.0 * fraction),
             _ => fraction,
+        };
+        let tension = bipolar_or(self.tensions[index], 0.0) * 0.95;
+        // A bounded rational bias curve keeps endpoints and monotonicity while
+        // giving a useful range of early/late bends without per-sample powers.
+        let amount = if tension == 0.0 {
+            amount
+        } else {
+            amount * (1.0 + tension) / (1.0 - tension + 2.0 * tension * amount)
         };
         (start + (end - start) * amount).clamp(0.0, 1.0)
     }
@@ -282,17 +294,17 @@ impl VolumeShaper {
     }
 }
 
-/// Stereo one-pole low-pass with smoothed coefficients and independent cutoffs.
-/// Cutoffs are clamped between 5 Hz and 0.49 times the sample rate.
+/// Stereo 12 dB/octave Butterworth low-pass with smoothed tuning and independent
+/// cutoffs. The trapezoidal state-variable topology remains stable under cutoff
+/// modulation. Cutoffs are clamped between 5 Hz and 0.49 times the sample rate.
+/// Derivation: https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
 #[derive(Clone, Copy, Debug)]
 pub struct StereoLowpass {
     sample_rate: f64,
     smoothing_ms: f64,
     smoothing_coefficient: f64,
-    alpha_left: f64,
-    alpha_right: f64,
-    output_left: f64,
-    output_right: f64,
+    tuning: [f64; 2],
+    integrators: [[f64; 2]; 2],
     initialized: bool,
 }
 
@@ -302,10 +314,8 @@ impl StereoLowpass {
             sample_rate: valid_sample_rate(sample_rate),
             smoothing_ms: 2.0,
             smoothing_coefficient: 0.0,
-            alpha_left: 1.0,
-            alpha_right: 1.0,
-            output_left: 0.0,
-            output_right: 0.0,
+            tuning: [0.0; 2],
+            integrators: [[0.0; 2]; 2],
             initialized: false,
         };
         filter.update_smoothing();
@@ -315,7 +325,7 @@ impl StereoLowpass {
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         self.sample_rate = valid_sample_rate(sample_rate);
         self.update_smoothing();
-        self.initialized = false;
+        self.reset();
     }
 
     pub fn set_smoothing_ms(&mut self, milliseconds: f64) {
@@ -324,8 +334,7 @@ impl StereoLowpass {
     }
 
     pub fn reset(&mut self) {
-        self.output_left = 0.0;
-        self.output_right = 0.0;
+        self.integrators = [[0.0; 2]; 2];
         self.initialized = false;
     }
 
@@ -336,38 +345,50 @@ impl StereoLowpass {
         cutoff_left_hz: f32,
         cutoff_right_hz: f32,
     ) -> (f32, f32) {
-        let target_left = self.cutoff_coefficient(cutoff_left_hz);
+        let target_left = self.cutoff_tuning(cutoff_left_hz);
         let target_right = if cutoff_left_hz == cutoff_right_hz {
             target_left
         } else {
-            self.cutoff_coefficient(cutoff_right_hz)
+            self.cutoff_tuning(cutoff_right_hz)
         };
         if self.initialized {
             let coefficient = self.smoothing_coefficient;
-            self.alpha_left = target_left + coefficient * (self.alpha_left - target_left);
-            self.alpha_right = target_right + coefficient * (self.alpha_right - target_right);
+            self.tuning[0] = target_left + coefficient * (self.tuning[0] - target_left);
+            self.tuning[1] = target_right + coefficient * (self.tuning[1] - target_right);
         } else {
-            self.alpha_left = target_left;
-            self.alpha_right = target_right;
+            self.tuning = [target_left, target_right];
             self.initialized = true;
         }
-        let left = audio_or_silence(left) as f64;
-        let right = audio_or_silence(right) as f64;
-        self.output_left += self.alpha_left * (left - self.output_left);
-        self.output_right += self.alpha_right * (right - self.output_right);
-        if self.output_left.abs() < 1.0e-20 {
-            self.output_left = 0.0;
-        }
-        if self.output_right.abs() < 1.0e-20 {
-            self.output_right = 0.0;
-        }
-        (self.output_left as f32, self.output_right as f32)
+        (
+            self.process_channel(left, 0),
+            self.process_channel(right, 1),
+        )
     }
 
-    fn cutoff_coefficient(&self, cutoff_hz: f32) -> f64 {
+    fn cutoff_tuning(&self, cutoff_hz: f32) -> f64 {
         let maximum = self.sample_rate * 0.49;
         let cutoff = finite_or(cutoff_hz as f64, 20000.0).clamp(5.0_f64.min(maximum), maximum);
-        1.0 - (-std::f64::consts::TAU * cutoff / self.sample_rate).exp()
+        (std::f64::consts::PI * cutoff / self.sample_rate).tan()
+    }
+
+    fn process_channel(&mut self, sample: f32, channel: usize) -> f32 {
+        let input = audio_or_silence(sample) as f64;
+        let g = self.tuning[channel];
+        // Fixed Q = 1/sqrt(2), providing a flat passband without resonant gain.
+        let a1 = 1.0 / (1.0 + g * (g + std::f64::consts::SQRT_2));
+        let a2 = g * a1;
+        let a3 = g * a2;
+        let [ic1, ic2] = self.integrators[channel];
+        let v3 = input - ic2;
+        let band = a1 * ic1 + a2 * v3;
+        let low = ic2 + a2 * ic1 + a3 * v3;
+        self.integrators[channel] = [2.0 * band - ic1, 2.0 * low - ic2];
+        for state in &mut self.integrators[channel] {
+            if !state.is_finite() || state.abs() < 1.0e-20 {
+                *state = 0.0;
+            }
+        }
+        finite_or(low, 0.0).clamp(-(f32::MAX as f64), f32::MAX as f64) as f32
     }
 
     fn update_smoothing(&mut self) {
@@ -409,6 +430,78 @@ pub fn soft_clip(sample: f32, amount: f32) -> f32 {
     sample * (1.0 - amount) + saturated * amount
 }
 
+/// First-order antiderivative antialiasing (ADAA) for normalized tanh drive.
+/// It integrates the waveshaper between consecutive samples, reducing folded
+/// harmonics without an oversampling buffer or integer-sample latency. Like
+/// other first-order ADAA methods the wet signal has some high-frequency
+/// smoothing and an approximately half-sample phase delay. Zero amount passes
+/// through exactly and still tracks input history for later automation.
+/// Reference: https://dafx.de/paper-archive/2025/DAFx25_paper_30.pdf (eqs. 6-10).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AntialiasedDrive {
+    previous: [f64; 2],
+    initialized: [bool; 2],
+}
+
+impl AntialiasedDrive {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn process_frame(
+        &mut self,
+        left: f32,
+        right: f32,
+        amount_left: f32,
+        amount_right: f32,
+    ) -> (f32, f32) {
+        (
+            self.process_channel(left, amount_left, 0),
+            self.process_channel(right, amount_right, 1),
+        )
+    }
+
+    fn process_channel(&mut self, sample: f32, amount: f32, channel: usize) -> f32 {
+        let sample = audio_or_silence(sample);
+        let amount = unit_or(amount, 0.0);
+        let input = sample as f64;
+        let previous = if self.initialized[channel] {
+            self.previous[channel]
+        } else {
+            input
+        };
+        self.previous[channel] = input;
+        self.initialized[channel] = true;
+        if amount == 0.0 {
+            return sample;
+        }
+
+        let drive = 1.0 + amount as f64 * 15.0;
+        let normalization = drive.tanh();
+        let difference = input - previous;
+        let saturated = if difference.abs() > 1.0e-6 * (1.0 + input.abs() + previous.abs()) {
+            // Use the *current* drive for both antiderivatives so gain changes
+            // cannot inject a false difference from an older transfer function.
+            (log_cosh(input * drive) - log_cosh(previous * drive))
+                / (difference * drive * normalization)
+        } else {
+            ((input + previous) * 0.5 * drive).tanh() / normalization
+        };
+        let saturated = saturated.clamp(-1.0 / normalization, 1.0 / normalization) as f32;
+        sample * (1.0 - amount) + saturated * amount
+    }
+}
+
+fn log_cosh(value: f64) -> f64 {
+    let magnitude = value.abs();
+    // log(cosh(x)) in a form that never evaluates the overflowing cosh(x).
+    magnitude + (-2.0 * magnitude).exp().ln_1p() - std::f64::consts::LN_2
+}
+
 fn valid_sample_rate(value: f64) -> f64 {
     finite_or(value, 44100.0).clamp(1.0, 768000.0)
 }
@@ -424,6 +517,14 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 fn unit_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
+fn bipolar_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(-1.0, 1.0)
     } else {
         fallback
     }
@@ -480,6 +581,7 @@ mod tests {
     fn interpolation_has_expected_values_and_no_overshoot() {
         let mut curve = Curve {
             points: [1.0; POINT_COUNT],
+            tensions: [0.0; SEGMENT_COUNT],
             interpolation: Interpolation::Linear,
         };
         curve.points[0] = 0.0;
@@ -499,6 +601,58 @@ mod tests {
             for index in 0..=1000 {
                 assert!((0.0..=1.0).contains(&curve.value(index as f64 / 1000.0)));
             }
+        }
+    }
+
+    #[test]
+    fn segment_bend_preserves_endpoints_is_monotonic_and_defaults_to_neutral() {
+        for interpolation in [Interpolation::Linear, Interpolation::Smooth] {
+            let mut curve = Curve::from_preset(Preset::Ramp);
+            curve.interpolation = interpolation;
+            curve.points[0] = 0.0;
+            curve.points[1] = 1.0;
+            let center = 0.5 / SEGMENT_COUNT as f64;
+            assert_eq!(curve.value(center), 0.5);
+            for tension in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                curve.tensions[0] = tension;
+                assert_eq!(curve.value(0.0), 0.0);
+                assert_eq!(curve.value(1.0 / SEGMENT_COUNT as f64), 1.0);
+                close(
+                    curve.value(center) as f64,
+                    0.5 + tension as f64 * 0.475,
+                    1e-6,
+                );
+                let mut previous = 0.0;
+                for index in 0..=1000 {
+                    let value = curve.value(index as f64 / (1000.0 * SEGMENT_COUNT as f64));
+                    assert!(value >= previous && (0.0..=1.0).contains(&value));
+                    previous = value;
+                }
+            }
+            curve.points[0] = 1.0;
+            curve.points[1] = 0.0;
+            curve.tensions[0] = 0.5;
+            close(curve.value(center) as f64, 0.2625, 1e-6);
+            curve.interpolation = Interpolation::Step;
+            assert_eq!(curve.value(center), 1.0);
+        }
+    }
+
+    #[test]
+    fn nonfinite_bends_fall_back_to_neutral_without_changing_other_segments() {
+        let mut curve = Curve::from_preset(Preset::Ramp);
+        let neutral = curve;
+        for tension in [f32::NAN, f32::INFINITY, -f32::INFINITY] {
+            curve.tensions[0] = tension;
+            assert_eq!(
+                curve.value(0.5 / SEGMENT_COUNT as f64),
+                neutral.value(0.5 / SEGMENT_COUNT as f64)
+            );
+        }
+        curve.tensions[0] = 1.0;
+        for segment in 1..SEGMENT_COUNT {
+            let phase = (segment as f64 + 0.5) / SEGMENT_COUNT as f64;
+            assert_eq!(curve.value(phase), neutral.value(phase));
         }
     }
 
@@ -742,7 +896,10 @@ mod tests {
             let amplitude_low = (energy_low * 4.0 / frames as f64).sqrt();
             let amplitude_high = (energy_high * 4.0 / frames as f64).sqrt();
             assert!(amplitude_low > 0.98 && amplitude_low <= 1.0);
-            assert!(amplitude_high < 0.12);
+            assert!(
+                amplitude_high < 0.02,
+                "12 dB low-pass high-frequency response: {amplitude_high}"
+            );
         }
     }
 
@@ -760,5 +917,156 @@ mod tests {
                 filter.reset();
             }
         }
+    }
+
+    #[test]
+    fn butterworth_lowpass_is_minus_three_db_at_cutoff_across_sample_rates() {
+        for sample_rate in [8000.0, 44100.0, 48000.0, 96000.0, 192000.0] {
+            let mut filter = StereoLowpass::new(sample_rate);
+            filter.set_smoothing_ms(0.0);
+            let mut energy = 0.0;
+            let frames = sample_rate as usize;
+            for index in 0..frames {
+                let input =
+                    (std::f64::consts::TAU * index as f64 * 1000.0 / sample_rate).sin() as f32;
+                let output = filter.process_frame(input, input, 1000.0, 1000.0).0 as f64;
+                if index >= frames / 2 {
+                    energy += output * output;
+                }
+            }
+            let amplitude = (energy * 4.0 / frames as f64).sqrt();
+            close(amplitude, std::f64::consts::FRAC_1_SQRT_2, 1e-5);
+        }
+    }
+
+    #[test]
+    fn lowpass_remains_bounded_when_cutoff_changes_abruptly() {
+        for sample_rate in [8000.0, 44100.0, 96000.0, 192000.0] {
+            let mut filter = StereoLowpass::new(sample_rate);
+            filter.set_smoothing_ms(0.0);
+            for index in 0..20000 {
+                let cutoff = if index % 11 < 5 {
+                    5.0
+                } else {
+                    (sample_rate * 0.49) as f32
+                };
+                let input = (index as f64 * 0.19).sin() as f32;
+                let (left, right) = filter.process_frame(input, -input, cutoff, cutoff);
+                assert!(
+                    left.is_finite() && left.abs() < 8.0,
+                    "unstable filter: {left}"
+                );
+                assert_eq!(left, -right);
+            }
+        }
+    }
+
+    #[test]
+    fn antialiased_drive_has_exact_zero_amount_passthrough_and_channel_isolation() {
+        let mut drive = AntialiasedDrive::new();
+        for index in 0..1000 {
+            let input = (index as f32 * 0.1).sin();
+            let result = drive.process_frame(input, -input, 0.0, 0.0);
+            assert_eq!(result, (input, -input));
+        }
+        drive.reset();
+        for _ in 0..100 {
+            let output = drive.process_frame(0.8, 0.0, 1.0, 1.0);
+            assert!(output.0 > 0.9);
+            assert_eq!(output.1, 0.0);
+        }
+        assert_eq!(drive.process_frame(0.25, -0.125, 0.0, 0.0), (0.25, -0.125));
+    }
+
+    #[test]
+    fn antialiased_drive_matches_dc_transfer_during_amount_automation() {
+        let mut drive = AntialiasedDrive::new();
+        for input in [-1.0, -0.1, -1e-8, 0.0, 1e-8, 0.1, 1.0] {
+            drive.reset();
+            for index in 0..1000 {
+                let amount = (index % 101) as f32 / 100.0;
+                let (left, right) = drive.process_frame(input, -input, amount, amount);
+                close(left as f64, soft_clip(input, amount) as f64, 1e-6);
+                assert_eq!(left, -right);
+            }
+        }
+    }
+
+    #[test]
+    fn antialiased_drive_is_finite_for_pathological_inputs_and_fast_automation() {
+        let mut drive = AntialiasedDrive::new();
+        for sample in [
+            f32::NAN,
+            f32::INFINITY,
+            -f32::INFINITY,
+            f32::MAX,
+            -f32::MAX,
+            0.0,
+            1e-30,
+        ] {
+            for amount in [f32::NAN, -1.0, 0.0, 0.1, 0.5, 1.0, 2.0] {
+                let output = drive.process_frame(sample, -sample, amount, amount);
+                assert!(output.0.is_finite() && output.1.is_finite());
+            }
+        }
+        for index in 0..20000 {
+            let input = (index as f64 * 0.47).sin() as f32;
+            let amount = (index % 3) as f32 / 2.0;
+            let output = drive.process_frame(input, -input, amount, amount);
+            assert!(output.0.abs() < 1.01 && output.1.abs() < 1.01);
+        }
+    }
+
+    fn tone_energy(samples: &[f32], frequency: f64, sample_rate: f64) -> f64 {
+        let mut real = 0.0;
+        let mut imaginary = 0.0;
+        for (index, sample) in samples.iter().enumerate() {
+            let phase = std::f64::consts::TAU * frequency * index as f64 / sample_rate;
+            real += *sample as f64 * phase.cos();
+            imaginary += *sample as f64 * phase.sin();
+        }
+        (real * real + imaginary * imaginary) * 4.0 / (samples.len() as f64).powi(2)
+    }
+
+    #[test]
+    fn antialiased_drive_reduces_folded_harmonics_of_a_high_frequency_tone() {
+        let sample_rate = 48000.0;
+        let mut drive = AntialiasedDrive::new();
+        let mut naive = Vec::new();
+        let mut antialiased = Vec::new();
+        // 7 kHz has only its fundamental and third harmonic below Nyquist.
+        // Other odd 1 kHz bins are exclusively folded harmonics in this test.
+        // Discard an integer number of tone periods before the coherent window.
+        for index in 0..5280 {
+            let input =
+                (0.75 * (std::f64::consts::TAU * 7000.0 * index as f64 / sample_rate).sin()) as f32;
+            let output = drive.process_frame(input, input, 1.0, 1.0).0;
+            if index >= 480 {
+                naive.push(soft_clip(input, 1.0));
+                antialiased.push(output);
+            }
+        }
+        let aliases = [
+            1000.0, 3000.0, 5000.0, 9000.0, 11000.0, 13000.0, 15000.0, 17000.0, 19000.0, 23000.0,
+        ];
+        let naive_energy: f64 = aliases
+            .iter()
+            .map(|hz| tone_energy(&naive, *hz, sample_rate))
+            .sum();
+        let antialiased_energy: f64 = aliases
+            .iter()
+            .map(|hz| tone_energy(&antialiased, *hz, sample_rate))
+            .sum();
+        assert!(
+            antialiased_energy < naive_energy * 0.35,
+            "alias power ratio {} (naive {naive_energy}, ADAA {antialiased_energy})",
+            antialiased_energy / naive_energy
+        );
+        let fundamental_ratio = tone_energy(&antialiased, 7000.0, sample_rate)
+            / tone_energy(&naive, 7000.0, sample_rate);
+        assert!(
+            fundamental_ratio > 0.7,
+            "alias reduction must preserve the fundamental: {fundamental_ratio}"
+        );
     }
 }

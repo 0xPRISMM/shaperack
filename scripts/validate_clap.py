@@ -11,6 +11,7 @@ This is a headless integration test; it does not validate a DAW or the editor.
 import argparse
 import ctypes as C
 from concurrent.futures import ThreadPoolExecutor
+import json
 import math
 from pathlib import Path
 import threading
@@ -19,6 +20,8 @@ import threading
 U32, I32, U64, I64 = C.c_uint32, C.c_int32, C.c_uint64, C.c_int64
 F64, VOID, CHAR = C.c_double, C.c_void_p, C.c_char_p
 FN = C.CFUNCTYPE  # CLAP is extern "C", also on Windows.
+MODULES = ("Volume", "Filter", "Pan", "Drive")
+SEGMENT_COUNT = 16
 
 
 class Version(C.Structure):
@@ -168,6 +171,14 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def expected_parameter_id(stable_id):
+    """Pinned NIH-plug CLAP/VST3 ID contract, independent of enumeration order."""
+    value = 0
+    for byte in stable_id.encode("utf-8"):
+        value = (value * 31 + byte) & 0xffffffff
+    return value & 0x7fffffff
+
+
 def check_abi():
     require(C.sizeof(VOID) == 8, "Use a 64-bit Python interpreter for the x64 plugin")
     expected = {Version: 12, Descriptor: 88, Plugin: 96, Host: 88, Entry: 40,
@@ -194,6 +205,7 @@ class EventList:
 
 class TestHost:
     def __init__(self, path):
+        self.path = path
         self.main_ident = threading.get_ident()
         self.audio_ident = None
         self.callback_requested = False
@@ -236,11 +248,14 @@ class TestHost:
         self.params = self.extension_for(b"clap.params", Params)
         self.state = self.extension_for(b"clap.state", State)
         self.infos = {}
+        parameter_ids = set()
         for index in range(self.params.count(self.plugin)):
             info = ParamInfo()
             require(self.params.get_info(self.plugin, index, C.byref(info)), "get_info failed")
             name = info.name.decode("utf-8")
             require(name not in self.infos, f"Duplicate parameter name {name}")
+            require(info.id not in parameter_ids, f"Duplicate parameter ID {info.id}")
+            parameter_ids.add(info.id)
             self.infos[name] = info
             require(info.min_value <= self.value(name) <= info.max_value,
                     f"Parameter outside its declared range: {name}")
@@ -252,6 +267,30 @@ class TestHost:
         require(required.issubset(self.infos), f"Missing parameters: {required - self.infos.keys()}")
         require(len(self.infos) >= 80, "Curve points were not exported as host parameters")
         require(self.infos["Bypass"].flags & (1 << 4), "Bypass is not identified to the host")
+        existing_ids = {
+            "Tempo sync": "sync", "Cycle length": "division", "Free rate": "free-hz",
+            "Phase offset": "offset", "Right channel offset": "stereo", "De-click": "smooth-ms",
+            "Mix": "mix", "Output": "output", "Bypass": "bypass",
+        }
+        for module in MODULES:
+            prefix = module.lower()
+            existing_ids.update({f"{module} enabled": f"{prefix}_enabled",
+                                 f"{module} amount": f"{prefix}_amount",
+                                 f"{module} interpolation": f"{prefix}_style"})
+            for point in range(SEGMENT_COUNT + 1):
+                existing_ids[f"{module} point {point:02}"] = f"{prefix}_value_{point + 1}"
+            for segment in range(1, SEGMENT_COUNT + 1):
+                name = f"{module} bend {segment:02}"
+                require(name in self.infos, f"Missing automatable segment bend: {name}")
+                info = self.infos[name]
+                require(info.min_value == 0.0 and info.max_value == 1.0
+                        and abs(info.default_value - 0.5) < 1e-6,
+                        f"Unexpected normalized bend range/default: {name}")
+                require(info.flags & (1 << 5), f"Segment bend is not automatable: {name}")
+                existing_ids[name] = f"{prefix}_tension_{segment}"
+        for name, stable_id in existing_ids.items():
+            require(self.infos[name].id == expected_parameter_id(stable_id),
+                    f"Host parameter ID changed: {name} ({stable_id})")
         print(f"PASS factory/descriptor/init; {len(self.infos)} host parameters")
 
     def request_callback(self, _host):
@@ -306,19 +345,28 @@ class TestHost:
             self.active = False
         self.service_callbacks()
 
-    def block(self, count=512, tempo=120.0, events=(), beat=None):
+    def block(self, count=512, tempo=120.0, events=(), beat=None,
+              playing=True, input_values=(0.25, 0.15)):
         require(self.processing and 1 <= count <= 512, "Invalid process call")
-        inputs = [(C.c_float * count)(*([value] * count)) for value in (0.25, 0.15)]
+        require(len(input_values) == 2, "The plugin expects one stereo main input bus")
+        inputs = [(C.c_float * count)(*([value] * count)) for value in input_values]
         outputs = [(C.c_float * count)() for _ in range(2)]
         input_ptrs = (C.POINTER(C.c_float) * 2)(*inputs)
         output_ptrs = (C.POINTER(C.c_float) * 2)(*outputs)
         in_buffer = AudioBuffer(input_ptrs, None, 2, 0, 0)
         out_buffer = AudioBuffer(output_ptrs, None, 2, 0, 0)
         seconds = self.position / self.sample_rate
-        beat = seconds * tempo / 60.0 if beat is None else beat
+        if beat is None:
+            beat = seconds * tempo / 60.0
+        else:
+            # Explicit seeks and a stopped playhead must describe consistent
+            # beat/second timelines even while steady_time keeps increasing.
+            seconds = beat * 60.0 / tempo
         transport = Transport()
         transport.header = EventHeader(C.sizeof(Transport), 0, 0, 9, 0)
-        transport.flags = 1 | 2 | 4 | 8 | 16  # tempo, timelines, time signature, playing
+        transport.flags = 1 | 2 | 4 | 8  # tempo, timelines, time signature
+        if playing:
+            transport.flags |= 16
         transport.song_pos_beats = round(beat * (1 << 31))
         transport.song_pos_seconds = round(seconds * (1 << 31))
         transport.tempo = tempo
@@ -385,6 +433,88 @@ def assert_dry(channels):
                 "Mix zero or bypass did not produce dry audio after settling")
 
 
+def render_stopped(host, frames, sizes, input_values=(0.25, 0.15), move_playhead=False):
+    """Render Sync preview with an explicitly stopped transport and fixed tempo."""
+    host.activate()
+    channels = [[], []]
+    processed = index = 0
+    try:
+        while processed < frames:
+            count = min(sizes[index % len(sizes)], frames - processed)
+            beat = 88.375 if move_playhead and index % 2 else 0.0
+            block = host.block(count, tempo=127.0, beat=beat, playing=False,
+                               input_values=input_values)
+            for output, part in zip(channels, block):
+                output.extend(part)
+            processed += count
+            index += 1
+    finally:
+        host.deactivate()
+    return channels
+
+
+def assert_same_audio(actual, expected, tolerance, message):
+    require(len(actual) == len(expected)
+            and all(len(left) == len(right) for left, right in zip(actual, expected)),
+            f"{message}: different channel/sample counts")
+    error = max(abs(left - right) for actual_channel, expected_channel in zip(actual, expected)
+                for left, right in zip(actual_channel, expected_channel))
+    require(error < tolerance, f"{message}: maximum sample error {error:.9f}")
+
+
+def validate_stopped_preview(host):
+    # Preroll silence until the gain smoother is settled. The old frozen phase
+    # could leak only its initial transient, hiding permanent preview silence.
+    host.activate()
+    for _ in range(32):
+        host.block(512, beat=0.0, playing=False, input_values=(0.0, 0.0))
+    note = host.block(256, beat=0.0, playing=False)
+    require(max(note[0]) > 0.20 and max(note[1]) > 0.12,
+            "Sync Pump muted a stopped-transport note after silent preroll")
+    host.deactivate()
+
+    fixed = render_stopped(host, 48001, (512,))
+    varied = render_stopped(host, 48001, (1, 17, 64, 127, 512))
+    moved = render_stopped(host, 48001, (1, 17, 64, 127, 512), move_playhead=True)
+    require(min(fixed[0]) < 0.05 and max(fixed[0]) > 0.20,
+            "Stopped Sync preview does not advance through the Pump curve")
+    assert_same_audio(varied, fixed, 2e-6, "Stopped Sync preview depends on buffer sizes")
+    assert_same_audio(moved, fixed, 2e-6, "Stopped playhead positions reset the preview clock")
+    print("PASS stopped Sync Pump: note after silent preroll; fixed/moving stopped playhead; varied buffers")
+
+    # Audio sources assigned to a DAW mixer bus arrive as a single stereo sum.
+    # With Volume alone the result must equal the sum of the same shaped voices.
+    first_input, second_input = (0.25, 0.15), (0.175, 0.225)
+    combined_input = tuple(left + right for left, right in zip(first_input, second_input))
+    sizes = (17, 512, 64, 1, 127)
+    first = render_stopped(host, 24001, sizes, first_input)
+    second = render_stopped(host, 24001, sizes, second_input)
+    combined = render_stopped(host, 24001, sizes, combined_input)
+    expected = [[left + right for left, right in zip(a, b)] for a, b in zip(first, second)]
+    assert_same_audio(combined, expected, 2e-6, "Summed main-bus inputs are not shaped equivalently")
+    require(max(combined[0]) > 0.35 and max(combined[1]) > 0.30,
+            "Summed sources are inaudible during stopped Sync preview")
+    print("PASS two source signals summed into the stereo main bus during stopped Sync preview")
+
+    # A linear ramp makes the resumed phase directly measurable in the first
+    # sample. De-click is disabled only for this exact alignment assertion.
+    ramp = {f"Volume point {point:02}": point / SEGMENT_COUNT
+            for point in range(SEGMENT_COUNT + 1)}
+    ramp.update({"Volume interpolation": 0.0, "De-click": 0.0})
+    host.set(ramp)
+    host.activate()
+    for _ in range(8):
+        host.block(127, beat=0.0, playing=False)
+    for beat, gain in ((88.375, 0.375), (-0.25, 0.75), (0.125, 0.125)):
+        resumed = host.block(17, beat=beat, playing=True)
+        require(all(abs(channel[0] - level * gain) < 1e-6
+                    for channel, level in zip(resumed, (0.25, 0.15))),
+                f"Playing transport did not align the first sample after preview/seek at beat {beat}")
+    host.deactivate()
+    host.set({name: info.default_value for name, info in host.infos.items()})
+    print("PASS playback resumes at the exact host phase; positive and negative seeks align first sample")
+
+
 def validate(host):
     host.activate()
     output = []
@@ -394,6 +524,8 @@ def validate(host):
     require(min(output) < 0.05 and max(output) > 0.20, "Default pump has an unexpected range")
     print(f"PASS default pump: gain {min(output) / 0.25:.4f}..{max(output) / 0.25:.4f}")
     host.deactivate()
+
+    validate_stopped_preview(host)
 
     for tempo, sample_rate in ((83.0, 48000.0), (128.0, 44100.0), (173.0, 96000.0)):
         host.activate(sample_rate)
@@ -443,11 +575,45 @@ def validate(host):
     host.deactivate()
     print("PASS timestamped process automation; mix zero and bypass pass dry audio")
 
+    host.set({name: info.default_value for name, info in host.infos.items()})
+    curve_settings = {f"Volume point {point:02}": 0.0 if point == 0 else 1.0
+                      for point in range(SEGMENT_COUNT + 1)}
+    curve_settings.update({"Volume interpolation": 0.0, "De-click": 0.0})
+    host.set(curve_settings)
+    for normalized, expected_gain in ((0.5, 0.5), (0.75, 0.7375), (0.25, 0.2625)):
+        host.set({"Volume bend 01": normalized})
+        host.activate()
+        output = host.block(1, beat=1.0 / 32.0)
+        require(abs(output[0][0] - 0.25 * expected_gain) < 1e-6
+                and abs(output[1][0] - 0.15 * expected_gain) < 1e-6,
+                f"Bent segment midpoint gain differs at bend {normalized}")
+        host.deactivate()
+    host.set({"Volume bend 01": 0.5})
+    host.activate()
+    reference = host.block(512)
+    host.deactivate()
+    host.activate()
+    bent = host.block(512, events=[host.event("Volume bend 01", 0.85, time=128)])
+    require(max(abs(actual - expected) for actual, expected
+                in zip(bent[0][:128], reference[0][:128])) < 1e-6,
+            "Future bend automation affected preceding samples")
+    require(bent[0][-1] > reference[0][-1] + 0.01,
+            "Automated segment bend did not change audio")
+    host.deactivate()
+    host.set({name: info.default_value for name, info in host.infos.items()})
+    print("PASS stable IDs, all 64 bend parameters, bent-segment audio and timestamped bend automation")
+
     host.set({"Bypass": 0.0, "Mix": 0.37, "Volume point 00": 0.17,
               "Filter enabled": 1.0, "Pan enabled": 1.0, "Drive enabled": 1.0})
+    bends = [f"{module} bend {segment:02}" for module in MODULES
+             for segment in range(1, SEGMENT_COUNT + 1)]
+    edited_bends = {name: (index + 1) / (len(bends) + 1) for index, name in enumerate(bends)}
+    host.set(edited_bends)
     snapshot = {name: host.value(name) for name in host.infos}
     payload = host.save()
-    host.set({"Mix": 0.91, "Volume point 00": 0.83})
+    changed = {name: 1.0 - value for name, value in edited_bends.items()}
+    changed.update({"Mix": 0.91, "Volume point 00": 0.83})
+    host.set(changed)
     require(host.save() != payload, "Edited parameter state did not change")
     host.load(payload)
     require(all(abs(host.value(name) - value) < 1e-6 for name, value in snapshot.items()),
@@ -456,7 +622,36 @@ def validate(host):
     for _ in range(10):
         host.block()
     host.deactivate()
-    print(f"PASS state save/load ({len(payload)} bytes), all parameter values and edited curve")
+    print(f"PASS state save/load ({len(payload)} bytes), all {len(snapshot)} parameters, points and 64 bends")
+
+    # NIH-plug's current uncompressed state has an eight-byte length prefix.
+    # Model a v0.1.1 project state by removing only the newly introduced bend
+    # parameters and UI label, then load it into a fresh default plugin instance.
+    length = int.from_bytes(payload[:8], "little")
+    require(length == len(payload) - 8, "Unexpected state stream framing")
+    legacy_state = json.loads(payload[8:])
+    legacy_state["version"] = "0.1.1"
+    legacy_state["fields"].pop("preset-name", None)
+    for module in MODULES:
+        for segment in range(1, SEGMENT_COUNT + 1):
+            key = f"{module.lower()}_tension_{segment}"
+            require(key in legacy_state["params"], f"Segment bend missing from serialized state: {key}")
+            del legacy_state["params"][key]
+    legacy_json = json.dumps(legacy_state, separators=(",", ":")).encode("utf-8")
+    legacy_payload = len(legacy_json).to_bytes(8, "little") + legacy_json
+    fresh = TestHost(host.path)
+    try:
+        fresh.load(legacy_payload)
+        require(all(abs(fresh.value(name) - 0.5) < 1e-6 for name in bends),
+                "An old project did not initialize newly added bends to neutral")
+        require(all(abs(fresh.value(name) - value) < 1e-6 for name, value in snapshot.items()
+                    if name not in edited_bends), "An old project's existing audio parameters changed")
+        fresh.activate()
+        fresh.block()
+        fresh.deactivate()
+    finally:
+        fresh.close()
+    print("PASS fresh-instance v0.1.1 state restoration with neutral new segment bends")
 
 
 def main():
