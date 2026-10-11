@@ -1,6 +1,7 @@
 [package]
+authors = ["eM4"]
 name = "shaperack"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A drawable, tempo-synced modulation rack for VST3 and CLAP hosts"
 license = "GPL-3.0-or-later"

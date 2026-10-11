@@ -324,7 +324,7 @@ def validate(path):
         info = FactoryInfo()
         require(method(factory, 3, I32, C.POINTER(FactoryInfo))(factory, C.byref(info)) == 0,
                 "VST3 factory information unavailable")
-        require(info.vendor == b"PRISMM", "Unexpected VST3 vendor")
+        require(info.vendor == b"eM4", "Unexpected VST3 vendor")
         count = method(factory, 4, I32)(factory)
         require(count == 1, f"Expected one ShapeRack class, found {count}")
         plugin = ClassInfo()

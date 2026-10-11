@@ -76,7 +76,7 @@ fn blend(dry: (f32, f32), wet: (f32, f32), amount: f32) -> (f32, f32) {
 
 impl Plugin for ShapeRack {
     const NAME: &'static str = "ShapeRack";
-    const VENDOR: &'static str = "PRISMM";
+    const VENDOR: &'static str = "eM4";
     const URL: &'static str = "https://github.com/0xPRISMM/shaperack";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");

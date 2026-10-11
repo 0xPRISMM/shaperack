@@ -55,10 +55,10 @@ struct UiState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum CurveTool {
-    #[default]
     Nodes,
     Draw,
     Line,
+    #[default]
     Bend,
 }
 
@@ -1917,10 +1917,7 @@ mod tests {
         let context = egui::Context::default();
         let params = ShapeRackParams::default();
         let host = SliderContext::default();
-        let mut state = UiState {
-            tool: CurveTool::Bend,
-            ..Default::default()
-        };
+        let mut state = UiState::default();
         let modifiers = egui::Modifiers::default();
         let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
         let original = params.volume.curve();
@@ -2041,7 +2038,10 @@ mod tests {
         let context = egui::Context::default();
         let params = ShapeRackParams::default();
         let host = SliderContext::default();
-        let mut state = UiState::default();
+        let mut state = UiState {
+            tool: CurveTool::Nodes,
+            ..Default::default()
+        };
         let modifiers = egui::Modifiers {
             command: true,
             ctrl: true,

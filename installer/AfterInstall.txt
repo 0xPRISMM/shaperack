@@ -1,4 +1,4 @@
-ShapeRack 0.2.0 is installed.
+ShapeRack 0.2.1 is installed.
 
 Load ShapeRack in FL Studio:
 
@@ -17,8 +17,9 @@ Sync follows the project tempo and keeps cycling while you preview notes
 with playback stopped (SYNC PREVIEW). Starting playback realigns the curve
 with the song (SYNC PLAYING). Free sets an independent rate in Hz.
 
-Edit curves with Nodes, Draw, Line, or Bend. Drag a diamond or Alt-drag a
-segment to bend it; Shift gives fine control in Nodes and Bend. Snap adjusts
+Bend is the default editing tool. Nodes, Draw, and Line remain in Edit.
+Drag a diamond or Alt-drag a segment to bend it; Shift gives fine control
+in Nodes and Bend. Snap adjusts
 vertical values. The 17 point times stay at equal divisions of the cycle.
 Use Undo, Redo, and Tools for copy/paste, invert, reverse,
 and flatten. Shape buttons replace the current module's curve.
@@ -32,7 +33,7 @@ Refresh picks up presets saved by another ShapeRack instance.
 Your personal preset library is stored in:
 %APPDATA%\PRISMM\ShapeRack\Presets
 
-Version 0.2.0 includes a 12 dB/octave Butterworth filter and antialiased drive.
+Version 0.2.1 includes a 12 dB/octave Butterworth filter and antialiased drive.
 
 If you selected CLAP, rescan the CLAP plugin folder in a compatible host:
 C:\Program Files\Common Files\CLAP
@@ -44,7 +45,8 @@ To uninstall, close your audio hosts and remove ShapeRack from Windows
 Settings > Apps > Installed apps. Projects using ShapeRack will require
 the plugin to remain installed. Your personal preset files are retained.
 
-FL Studio playback and project save/reopen have not yet been tested.
+Playback, stopped note previews, module presets, and multiple routed
+sources were checked in FL Studio 2025. Project save/reopen remains untested.
 See VALIDATION.md for the checks completed for this release.
 
 Project, source code, and releases:

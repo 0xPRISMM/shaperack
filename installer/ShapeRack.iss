@@ -1,10 +1,10 @@
 ; Compile with Inno Setup 6.3 or newer. The PowerShell build script supplies
 ; AppVersion/FileVersion from Cargo.toml and an absolute RepoRoot.
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #ifndef FileVersion
-  #define FileVersion "0.2.0.0"
+  #define FileVersion "0.2.1.0"
 #endif
 #ifndef RepoRoot
   #define RepoRoot AddBackslash(SourcePath) + ".."
@@ -35,7 +35,7 @@ AppId={#ProductId}
 AppName={#ProductName}
 AppVersion={#AppVersion}
 AppVerName={#ProductName} {#AppVersion}
-AppPublisher=PRISMM
+AppPublisher=eM4
 AppPublisherURL=https://github.com/0xPRISMM/shaperack
 AppSupportURL=https://github.com/0xPRISMM/shaperack/issues
 AppUpdatesURL=https://github.com/0xPRISMM/shaperack/releases

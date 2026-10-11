@@ -1,6 +1,6 @@
 # ShapeRack
 
-Download the [v0.2.0 Windows installer or ZIP](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.0), with improved filter and drive processing, saveable/shareable rack presets, and new curve editing tools.
+Download the [v0.2.1 Windows installer or ZIP](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1), with improved filter and drive processing, saveable/shareable rack presets, and Bend as the default curve editing tool.
 
 An original Rust modulation rack for **Windows x64 VST3 and CLAP** hosts. Draw a rhythm and use it to animate volume, a low-pass filter, stereo balance, or soft saturation. Designed for FL Studio mixer inserts.
 
@@ -24,23 +24,25 @@ ShapeRack is an independent project inspired by drawable modulation effects. It 
 
 ## Install in FL Studio
 
-**[Download ShapeRack 0.2.0 Setup for Windows x64 (.exe)](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.0/ShapeRack-0.2.0-Setup.exe)**
+**[Download ShapeRack 0.2.1 Setup for Windows x64 (.exe)](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.1/ShapeRack-0.2.1-Setup.exe)**
 
 Close your DAW, run the setup EXE, and approve the administrator prompt. Setup installs the VST3 plugin in the standard Common Files location, offers an optional CLAP component, and adds a Windows uninstaller. Then scan for plugins in FL Studio and load ShapeRack in a mixer effect slot. No Rust or build tools are needed to install the release.
 
-The installer is unsigned, so Windows may display an unknown-publisher notice. A [ZIP package for manual installation](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.0) is also available. See [INSTALL.md](INSTALL.md) for paths, scanning, updates, and removal. FL Studio playback has not yet been tested; [VALIDATION.md](VALIDATION.md) records the checks performed.
+The installer is unsigned, so Windows may display an unknown-publisher notice. A [ZIP package for manual installation](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1) is also available. See [INSTALL.md](INSTALL.md) for paths, scanning, updates, and removal. FL Studio 2025 checks with the v0.2.0 VST3 confirmed signal activity during playback, stopped note previews, combined source routing, and preset import/export. These checks used meters and waveform displays; speaker listening and FL project save/reopen remain untested. See [VALIDATION.md](VALIDATION.md) for version-specific coverage.
 
 ## Quick start
 
 1. Put ShapeRack on a sustained bass, pad, or synth mixer channel.
 2. Choose **Quarter-note pump** from **RACK PRESET** for a duck on every quarter-note beat.
-3. Drag across the curve in Draw mode, move point values in Nodes mode, or drag a segment diamond in Bend mode.
+3. Drag a segment diamond in the default **Bend** mode. Choose **Nodes** from the tool dropdown to move point values, or **Draw** to paint across the curve.
 4. Select Filter, Pan, or Drive, then click its **Filter OFF**, **Pan OFF**, or **Drive OFF** button to turn it on. The button lights up and says **ON**. Each tab has its own curve; all modules share the clock.
 5. Adjust Amount, Mix, and De-click to taste. Pan has no effect on mono audio.
 
 The curve resets each cycle, so a mismatched start/end value can click at zero De-click. Use smoothing for pump/gate shapes. **Sync** follows the project tempo and keeps cycling when you preview notes with transport stopped; the header says **SYNC PREVIEW**. Pressing Play realigns the curve with the song position and changes the status to **SYNC PLAYING**. **Free** runs at the selected speed in Hz. If host tempo is unavailable, Sync uses 120 BPM; if song position is unavailable, it continues its internal tempo clock.
 
 ## Edit curves
+
+Bend is the default tool when the editor opens. Nodes, Draw, and Line remain available in the tool dropdown.
 
 | Tool | Gesture |
 | --- | --- |
@@ -73,7 +75,7 @@ Install current stable Rust and the Windows Visual Studio C++ build tools, then:
 ```powershell
 cargo test --locked --lib
 cargo xtask bundle shaperack --release --locked
-powershell -NoProfile -File scripts/package.ps1 -Version 0.2.0
+powershell -NoProfile -File scripts/package.ps1 -Version 0.2.1
 ```
 
 The bundled VST3 and CLAP files are in `target/bundled/`; the ZIP is in `dist/`. The dependency lockfile and required NIH-plug sources are checked in. [Vendor notes](vendor/README.md) describe the small CLAP automation timing fix applied to the framework.
@@ -84,7 +86,7 @@ To build the setup EXE, also install [Inno Setup 6](https://jrsoftware.org/isinf
 powershell -NoProfile -File scripts/build-installer.ps1
 ```
 
-This creates `dist/ShapeRack-0.2.0-Setup.exe`. If the compiler is in a custom location, pass `-InnoCompiler 'C:\path\to\ISCC.exe'`. Building the installer does not install the plugin on your machine.
+This creates `dist/ShapeRack-0.2.1-Setup.exe`. If the compiler is in a custom location, pass `-InnoCompiler 'C:\path\to\ISCC.exe'`. Building the installer does not install the plugin on your machine.
 
 For a native editor preview without a DAW (dummy backend produces no audio):
 
@@ -96,7 +98,7 @@ GitHub Actions checks formatting, linting, Rust tests, and the real CLAP and VST
 
 ## Release scope
 
-Version 0.2.0 remains experimental. The filter uses a smoothed two-pole Butterworth state-variable design. Drive uses first-order antiderivative antialiasing (ADAA) to reduce folded harmonics; strong drive can still alias, and the wet signal has mild high-frequency smoothing and approximately half a sample of phase delay. It adds no buffered integer-sample latency. The DSP implementations reference [Cytomic's filter derivation](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf) and the [DAFx antiderivative antialiasing paper](https://dafx.de/paper-archive/2025/DAFx25_paper_30.pdf).
+Version 0.2.1 remains experimental. The filter uses a smoothed two-pole Butterworth state-variable design. Drive uses first-order antiderivative antialiasing (ADAA) to reduce folded harmonics; strong drive can still alias, and the wet signal has mild high-frequency smoothing and approximately half a sample of phase delay. It adds no buffered integer-sample latency. The DSP implementations reference [Cytomic's filter derivation](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf) and the [DAFx antiderivative antialiasing paper](https://dafx.de/paper-archive/2025/DAFx25_paper_30.pdf).
 
 Pan controls stereo balance. Bar labels assume four quarter-note beats. Modules share one clock and their order is fixed. Curve nodes stay at fixed time positions. This version does not include multiband processing, audio/MIDI triggering, time warping, or envelope followers.
 

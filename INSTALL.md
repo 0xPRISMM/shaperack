@@ -1,8 +1,8 @@
-# ShapeRack 0.2.0 — Windows x64 installation
+# ShapeRack 0.2.1 — Windows x64 installation
 
 ## Install with the EXE
 
-1. Download **[ShapeRack-0.2.0-Setup.exe](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.0/ShapeRack-0.2.0-Setup.exe)** from the GitHub release assets.
+1. Download **[ShapeRack-0.2.1-Setup.exe](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.1/ShapeRack-0.2.1-Setup.exe)** from the GitHub release assets.
 2. Close FL Studio and any other host using ShapeRack.
 3. Run the setup EXE and approve the administrator prompt. The installer is unsigned, so Windows may identify the publisher as unknown.
 4. Keep the VST3 component selected for FL Studio. Select the optional CLAP component if you also want that format installed.
@@ -23,7 +23,7 @@ The setup EXE installs the effect; you open ShapeRack inside a DAW mixer slot to
 2. Enable **Verify plugins** and run **Find installed plugins**. For an update, also enable **Rescan previously verified plugins**.
 3. Open a mixer insert effect slot and select **ShapeRack** from the plugin list. Favorite it in Plugin Manager if desired.
 
-The locations and scan steps follow the [official FL Studio installation guide](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/basics_externalplugins.htm). VST3 is the primary FL Studio package. FL Studio playback and project save/reopen have not yet been tested; see [VALIDATION.md](VALIDATION.md).
+The locations and scan steps follow the [official FL Studio installation guide](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/basics_externalplugins.htm). VST3 is the primary FL Studio package. Playback, stopped note previews, module presets, and multiple sources routed to one insert were checked in FL Studio 2025. Project save/reopen remains untested; see [VALIDATION.md](VALIDATION.md).
 
 ShapeRack starts with a quarter-note volume pump enabled. Reduce Volume Amount or Mix for a softer effect. Filter, Pan, and Drive start disabled. The plugin requires a 64-bit host and a graphics driver supporting its OpenGL editor.
 
@@ -35,11 +35,11 @@ To enable an effect, select its tab and click the button labeled **Filter OFF**,
 
 Use **RACK PRESET** to select a factory or personal preset. **Save...** asks for a name and saves the full rack to `%APPDATA%\PRISMM\ShapeRack\Presets`. **Import...** loads a shared `.shaperack.json` file; use Save afterward to keep it in your library. **Export...** opens a native save dialog for sharing or backup. **Refresh** picks up presets saved by another plugin instance.
 
-Preset files include all module settings, curve points and bends, and global audio controls. They leave the editor size alone. See the [curve editing guide](README.md#edit-curves) for Nodes, Draw, Line, Bend, snapping, and undo/redo.
+Preset files include all module settings, curve points and bends, and global audio controls. They leave the editor size alone. Bend opens by default; Nodes, Draw, and Line remain available in the Edit dropdown. See the [curve editing guide](README.md#edit-curves) for snapping and undo/redo.
 
 ## ZIP alternative
 
-1. Download and extract the Windows x64 ZIP from the [v0.2.0 release](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.0).
+1. Download and extract the Windows x64 ZIP from the [v0.2.1 release](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1).
 2. Copy the **entire `ShapeRack.vst3` folder**, including `Contents`, to the VST3 location above. Windows may request administrator approval.
 3. If needed, copy `ShapeRack.clap` to the CLAP location above.
 4. Rescan the host using the steps above.
@@ -57,7 +57,7 @@ Your personal preset files are retained during updates and uninstallation. Back 
 The [README build instructions](README.md#build-from-source) cover the Rust toolchain, C++ build tools, and plugin bundle. After building the bundle, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run:
 
 ```powershell
-powershell -NoProfile -File scripts/package.ps1 -Version 0.2.0
+powershell -NoProfile -File scripts/package.ps1 -Version 0.2.1
 powershell -NoProfile -File scripts/build-installer.ps1
 ```
 

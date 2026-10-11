@@ -1,6 +1,6 @@
 # ShapeRack validation
 
-ShapeRack 0.2.0 was checked on Windows x64 on 2026-10-11 using Rust 1.99.0, Windows PowerShell 5.1, and Inno Setup 6.7.3. It remains an experimental release.
+ShapeRack 0.2.1 passed the build, test, binary-host, and isolated installer checks below on Windows x64 on 2026-10-12 using Rust 1.99.0, Windows PowerShell 5.1, and Inno Setup 6.7.3. The rebuilt CLAP descriptor reports version 0.2.1 and vendor eM4; the VST3 factory also reports eM4. The separate FL Studio checks used the existing v0.2.0 VST3, before the v0.2.1 default-tool change. ShapeRack remains experimental.
 
 ## Audio, curves, and state
 
@@ -16,6 +16,19 @@ ShapeRack 0.2.0 was checked on Windows x64 on 2026-10-11 using Rust 1.99.0, Wind
 - Seven editor tests use real egui pointer events to exercise Nodes, Line, Bend, snapping, host gesture ordering, closing mid-drag, and layout bounds at 820x620 and 960x640.
 - The native standalone editor was visually inspected on Windows using the dummy audio backend and OpenGL. Factory recall, library saving, native export, and native import/cancellation were checked. Native file dialogs run on a separate worker so their Windows message loop does not reenter the editor's borrowed window handler. Host state changes stay on the GUI thread.
 - Module buttons and tabs display explicit ON/OFF state. The header distinguishes SYNC PREVIEW, SYNC PLAYING, and FREE RUNNING. `docs/ShapeRack-editor.png` shows the updated native editor.
+- The rebuilt v0.2.1 native standalone editor was opened with the dummy backend and visually confirmed to start in Bend. The existing Bend pointer-event test also starts from the default editor state. Nodes, Draw, and Line remain in the tool dropdown.
+
+## FL Studio 2025 checks
+
+Manual checks on Windows used the v0.2.0 VST3 at 130 BPM with a six-note synth pattern. Evidence was visible activity in ShapeRack's output meter, FL Studio's meters, and waveform displays. No speaker listening or exported-audio analysis was performed.
+
+- Pattern playback showed **SYNC PLAYING** and nonzero plugin and host meters.
+- With transport stopped and Volume enabled, **SYNC PREVIEW** with the factory Quarter-note pump produced nonzero output from piano-roll note previews (observed output about -43.5 dB). Stopped **Free** previews also produced output (about -34.1 dB).
+- The factory Slow filter sweep, Stereo sway, and Warm rhythmic drive racks all produced nonzero output during pattern playback. The last enables Volume and Drive together.
+- A kick source was temporarily routed into the same effect insert as the synth. Kick previews were checked during pattern playback and while stopped in Sync with Volume and Drive enabled (observed output about -28.6 dB). Its original routing was restored and no pattern notes were changed.
+- Native Export wrote a portable JSON preset containing all 153 audio parameters. Native Import restored the original custom rack, including its segment bends. The original rack was restored and playback resumed afterward.
+
+The private project, custom preset contents, and session screenshots are not included in the repository. These observations establish signal flow and UI/preset operation for the tested setup; they do not measure perceived sound quality or cover every routing configuration.
 
 ## Builds and installer
 
@@ -28,6 +41,6 @@ Repeat staging validation with `scripts/validate-installer.ps1 -InnoCompiler 'C:
 
 ## Remaining host checks
 
-The user's FL Studio report established the stopped Sync problem. Automated tests now cover its timing cause and routed stereo input through both exported plugin formats. The user's exact FL Studio project, saving/reopening projects inside FL Studio, the full Steinberg validator, high-DPI rendering, and other operating systems have not been tested. The dummy editor backend produces no audio; CLAP and VST3 integration use small headless test hosts. These checks cannot certify every DAW configuration.
+Automated tests cover the stopped Sync timing cause and routed stereo input through both exported plugin formats, and the FL Studio checks above cover playback and stopped previews in one real project. Speaker listening, exported-audio analysis, saving/reopening projects inside FL Studio, the full Steinberg validator, high-DPI rendering, and other operating systems remain untested. The v0.2.1 release binary has not yet been checked in FL Studio. The dummy editor backend produces no audio; CLAP and VST3 integration use small headless test hosts. These checks cannot certify every DAW configuration.
 
 README.md records the fixed-grid editor, shared clock, fixed module order, and DSP limitations. `vendor/README.md` documents the six-line CLAP automation timing fix in the bundled framework.
