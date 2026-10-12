@@ -1,10 +1,10 @@
 ; Compile with Inno Setup 6.3 or newer. The PowerShell build script supplies
 ; AppVersion/FileVersion from Cargo.toml and an absolute RepoRoot.
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.2.2"
 #endif
 #ifndef FileVersion
-  #define FileVersion "0.2.1.0"
+  #define FileVersion "0.2.2.0"
 #endif
 #ifndef RepoRoot
   #define RepoRoot AddBackslash(SourcePath) + ".."
@@ -18,6 +18,7 @@
   #define InstallRoot AddBackslash(TestRoot) + "PRISMM\ShapeRack"
   #define Vst3Root AddBackslash(TestRoot) + "VST3\ShapeRack.vst3"
   #define ClapRoot AddBackslash(TestRoot) + "CLAP"
+  #define PresetRoot AddBackslash(TestRoot) + "Presets"
   #define InstallerOutput "dist\test-installer"
   #define InstallerFilename "ShapeRack-" + AppVersion + "-Setup-TEST"
 #else
@@ -26,6 +27,7 @@
   #define InstallRoot "{autopf}\PRISMM\ShapeRack"
   #define Vst3Root "{commoncf64}\VST3\ShapeRack.vst3"
   #define ClapRoot "{commoncf64}\CLAP"
+  #define PresetRoot "{userappdata}\PRISMM\ShapeRack\Presets"
   #define InstallerOutput "dist"
   #define InstallerFilename "ShapeRack-" + AppVersion + "-Setup"
 #endif
@@ -82,6 +84,7 @@ Name: "vst3"; Description: "VST3 effect plugin (FL Studio)"; Types: standard ful
 Name: "clap"; Description: "CLAP effect plugin (for compatible hosts)"; Types: full
 
 [Files]
+Source: "presets\Factory\*.shaperack.json"; DestDir: "{#PresetRoot}\Factory"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "target\bundled\ShapeRack.vst3\*"; DestDir: "{#Vst3Root}"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "target\bundled\ShapeRack.clap"; DestDir: "{#ClapRoot}"; Components: clap; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -91,6 +94,10 @@ Source: "THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "installer\AfterInstall.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+[Dirs]
+Name: "{#PresetRoot}"; Flags: uninsneveruninstall
+Name: "{#PresetRoot}\Factory"; Flags: uninsneveruninstall
 
 [Messages]
 WelcomeLabel2=This installs ShapeRack, a drawable modulation effect, for 64-bit audio hosts.%n%nClose FL Studio and other audio hosts before continuing. ShapeRack will be available after you scan for new plugins.

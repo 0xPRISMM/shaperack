@@ -19,6 +19,11 @@ foreach ($relativePath in @(
     'target\bundled\ShapeRack.clap',
     'installer\ShapeRack.iss',
     'installer\AfterInstall.txt',
+    'presets\Factory\preset-Clean-rack.shaperack.json',
+    'presets\Factory\preset-Quarter-note-pump.shaperack.json',
+    'presets\Factory\preset-Slow-filter-sweep.shaperack.json',
+    'presets\Factory\preset-Stereo-sway.shaperack.json',
+    'presets\Factory\preset-Warm-rhythmic-drive.shaperack.json',
     'README.md', 'INSTALL.md', 'VALIDATION.md', 'THIRD_PARTY.md', 'LICENSE',
     'licenses\NIH-plug-ISC.txt', 'licenses\DEPENDENCY-NOTICES.txt'
 )) {

@@ -62,6 +62,12 @@ enum CurveTool {
     Bend,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurveHandle {
+    Node(usize),
+    Bend(usize),
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ValueGrid {
     #[default]
@@ -521,7 +527,7 @@ fn curve_section(
                     (CurveTool::Nodes, "Nodes", "Drag fixed grid points vertically. Shift-drag for fine changes. Double-click a point to blend it into its neighbours."),
                     (CurveTool::Draw, "Draw", "Paint across the graph to redraw points. Crossed grid values are filled in automatically."),
                     (CurveTool::Line, "Line", "Draw a straight line from your first point to the current pointer. Release to keep it."),
-                    (CurveTool::Bend, "Bend", "Drag segment diamonds vertically. Double-click to straighten. Alt-drag also bends from other tools. Bending a Step curve switches it to Linear."),
+                    (CurveTool::Bend, "Bend", "Drag points vertically or drag diamonds to bend segments. Double-click a point to blend it, or a segment to straighten it. Alt-drag always bends. Bending a Step curve switches it to Linear."),
                 ] {
                     ui.selectable_value(&mut state.tool, tool, name).on_hover_text(tooltip);
                 }
@@ -541,7 +547,7 @@ fn curve_section(
                 CurveTool::Draw => "Paint a curve  ·  Ctrl = snap  ·  Shift bypasses snap",
                 CurveTool::Line => "Drag from start to end to draw a line  ·  Ctrl = snap",
                 CurveTool::Bend => {
-                    "Drag diamonds to bend  ·  Double-click = straighten  ·  Shift = fine"
+                    "Drag points or bend diamonds  ·  Double-click = reset  ·  Shift = fine"
                 }
             })
             .small()
@@ -826,12 +832,19 @@ fn draw_canvas(
             let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
             let index = (x * SEGMENT_COUNT as f32).round() as usize;
             let curve = module.curve();
+            let handle = curve_handle_at(rect, &curve, position, state.tool == CurveTool::Bend);
             begin_curve_gesture(module, setter, state, curve);
-            if state.tool == CurveTool::Bend || modifiers.alt {
+            if modifiers.alt
+                || (state.tool == CurveTool::Bend && !matches!(handle, Some(CurveHandle::Node(_))))
+            {
                 let segment = ((x * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
                 state.bend_segment = Some(segment);
                 state.bend_origin = Some((position.y, curve.tensions[segment]));
-            } else if state.tool == CurveTool::Nodes {
+            } else if matches!(state.tool, CurveTool::Nodes | CurveTool::Bend) {
+                let index = match handle {
+                    Some(CurveHandle::Node(node)) => node,
+                    _ => index,
+                };
                 state.node = Some(index);
                 let node_position = curve_position(
                     rect,
@@ -897,11 +910,17 @@ fn draw_canvas(
         if let Some(position) = response.interact_pointer_pos() {
             let x = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
             let mut edited = curve;
-            if state.tool == CurveTool::Bend || modifiers.alt {
+            let handle = curve_handle_at(rect, &curve, position, state.tool == CurveTool::Bend);
+            if modifiers.alt
+                || (state.tool == CurveTool::Bend && !matches!(handle, Some(CurveHandle::Node(_))))
+            {
                 let segment = ((x * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
                 edited.tensions[segment] = 0.0;
-            } else if state.tool == CurveTool::Nodes {
-                let node = (x * SEGMENT_COUNT as f32).round() as usize;
+            } else if matches!(state.tool, CurveTool::Nodes | CurveTool::Bend) {
+                let node = match handle {
+                    Some(CurveHandle::Node(node)) => node,
+                    _ => (x * SEGMENT_COUNT as f32).round() as usize,
+                };
                 if node > 0 && node < SEGMENT_COUNT {
                     edited.points[node] = (curve.points[node - 1] + curve.points[node + 1]) * 0.5;
                 }
@@ -1075,13 +1094,28 @@ fn draw_canvas(
         TEXT,
     );
 
-    let hover_index = response.hover_pos().map(|position| {
-        (((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * SEGMENT_COUNT as f32).round()
-            as usize
-    });
+    let active_node = state
+        .node
+        .filter(|_| state.gesture_module == Some(state.module));
+    let active_bend = state
+        .bend_segment
+        .filter(|_| state.gesture_module == Some(state.module));
+    let show_bends = state.tool == CurveTool::Bend || modifiers.alt || active_bend.is_some();
+    let hover_handle = response
+        .hover_pos()
+        .and_then(|position| curve_handle_at(rect, &curve, position, show_bends));
+    let hover_index = match hover_handle {
+        Some(CurveHandle::Node(node)) if !modifiers.alt && active_bend.is_none() => Some(node),
+        _ => None,
+    };
+    let hover_segment = match hover_handle {
+        Some(CurveHandle::Bend(segment)) if active_node.is_none() => Some(segment),
+        _ => None,
+    };
     for (index, value) in curve.points.iter().enumerate() {
         let position = curve_position(rect, index as f32 / SEGMENT_COUNT as f32, *value);
-        let hovered = hover_index == Some(index);
+        let hovered =
+            active_node == Some(index) || (active_node.is_none() && hover_index == Some(index));
         painter.circle_filled(position, if hovered { 5.0 } else { 3.0 }, BACKGROUND);
         painter.circle_stroke(
             position,
@@ -1089,19 +1123,12 @@ fn draw_canvas(
             Stroke::new(if hovered { 2.0_f32 } else { 1.3_f32 }, accent),
         );
     }
-    let bending = state.tool == CurveTool::Bend || modifiers.alt || state.bend_segment.is_some();
-    if bending {
-        let hover_segment = response
-            .hover_pos()
-            .map(|position| {
-                (((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * SEGMENT_COUNT as f32)
-                    as usize
-            })
-            .map(|index| index.min(SEGMENT_COUNT - 1));
+    if show_bends {
         for segment in 0..SEGMENT_COUNT {
             let phase = (segment as f32 + 0.5) / SEGMENT_COUNT as f32;
             let position = curve_position(rect, phase, curve.value(phase as f64));
-            let highlighted = state.bend_segment == Some(segment) || hover_segment == Some(segment);
+            let highlighted = active_bend == Some(segment)
+                || (active_bend.is_none() && hover_segment == Some(segment));
             let size = if highlighted { 5.0 } else { 3.5 };
             painter.add(egui::Shape::convex_polygon(
                 vec![
@@ -1118,7 +1145,17 @@ fn draw_canvas(
     if let Some(position) = response.hover_pos() {
         let phase = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
         let segment = ((phase * SEGMENT_COUNT as f32) as usize).min(SEGMENT_COUNT - 1);
-        let text = if bending {
+        let bending = active_bend.or(hover_segment).or_else(|| {
+            (modifiers.alt && hover_handle.is_some() && active_node.is_none()).then_some(segment)
+        });
+        let text = if let Some(node) = active_node.or(hover_index) {
+            format!(
+                "Point {} · {:.0}% · cycle {:.0}%",
+                node + 1,
+                curve.points[node] * 100.0,
+                node as f32 / SEGMENT_COUNT as f32 * 100.0
+            )
+        } else if let Some(segment) = bending {
             format!(
                 "Segment {} · bend {:+.2}",
                 segment + 1,
@@ -1145,24 +1182,66 @@ fn draw_canvas(
             accent,
         );
     }
-    if response.hovered() {
-        ui.ctx()
-            .set_cursor_icon(if bending || state.tool == CurveTool::Nodes {
+    if state.gesture_module == Some(state.module) || response.hovered() {
+        ui.ctx().set_cursor_icon(
+            if active_node.is_some()
+                || active_bend.is_some()
+                || ((matches!(state.tool, CurveTool::Bend | CurveTool::Nodes) || modifiers.alt)
+                    && hover_handle.is_some())
+            {
                 egui::CursorIcon::ResizeVertical
-            } else {
+            } else if matches!(state.tool, CurveTool::Draw | CurveTool::Line) {
                 egui::CursorIcon::Crosshair
-            });
+            } else {
+                egui::CursorIcon::Default
+            },
+        );
     }
     response.on_hover_text(match state.tool {
         CurveTool::Nodes => "Drag fixed grid points vertically. Shift = fine, Control = snap, Alt = bend. Double-click a point to blend it into its neighbours.",
         CurveTool::Draw => "Paint across the 1/16 grid. Control = snap, Shift bypasses snapping. Each module keeps its own points and bends.",
         CurveTool::Line => "Drag a straight line across grid points. Line clears bends along the edited span and uses Linear interpolation.",
-        CurveTool::Bend => "Drag segment diamonds vertically to bend. Double-click a segment to straighten. Step switches to Linear when you bend it.",
+        CurveTool::Bend => "Drag points vertically or diamonds to bend. Double-click a point to blend it into neighbours; double-click a segment to straighten. Alt-drag always bends. Step switches to Linear when you bend it.",
     })
 }
 
 fn canvas_plot_rect(outer: Rect) -> Rect {
     Rect::from_min_max(outer.min + vec2(44.0, 21.0), outer.max - vec2(18.0, 25.0))
+}
+
+/// Share exact handle hit testing between press, double-click, and hover. Small
+/// windows can overlap hit areas; choose the closest handle, with nodes winning ties.
+fn curve_handle_at(
+    rect: Rect,
+    curve: &Curve,
+    pointer: egui::Pos2,
+    include_bends: bool,
+) -> Option<CurveHandle> {
+    let mut closest = None;
+    let mut closest_distance = f32::INFINITY;
+    for (index, value) in curve.points.iter().enumerate() {
+        let distance = pointer.distance_sq(curve_position(
+            rect,
+            index as f32 / SEGMENT_COUNT as f32,
+            *value,
+        ));
+        if distance <= 12.0 * 12.0 && distance < closest_distance {
+            closest = Some(CurveHandle::Node(index));
+            closest_distance = distance;
+        }
+    }
+    if include_bends {
+        for index in 0..SEGMENT_COUNT {
+            let phase = (index as f32 + 0.5) / SEGMENT_COUNT as f32;
+            let distance =
+                pointer.distance_sq(curve_position(rect, phase, curve.value(phase as f64)));
+            if distance <= 9.0 * 9.0 && distance < closest_distance {
+                closest = Some(CurveHandle::Bend(index));
+                closest_distance = distance;
+            }
+        }
+    }
+    closest
 }
 
 fn curve_position(rect: Rect, x: f32, y: f32) -> egui::Pos2 {
@@ -1890,8 +1969,19 @@ mod tests {
         events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
     ) -> Rect {
+        canvas_frame_with_cursor(context, params, host, state, events, modifiers).0
+    }
+
+    fn canvas_frame_with_cursor(
+        context: &egui::Context,
+        params: &ShapeRackParams,
+        host: &SliderContext,
+        state: &mut UiState,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> (Rect, egui::CursorIcon) {
         let mut outer = Rect::NOTHING;
-        let _ = context.run(
+        let output = context.run(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(540.0, 320.0))),
                 events,
@@ -1909,7 +1999,7 @@ mod tests {
                 });
             },
         );
-        canvas_plot_rect(outer)
+        (canvas_plot_rect(outer), output.platform_output.cursor_icon)
     }
 
     #[test]
@@ -2035,51 +2125,187 @@ mod tests {
 
     #[test]
     fn node_drag_stays_on_its_time_slot_and_control_snaps_values() {
+        for tool in [CurveTool::Nodes, CurveTool::Bend] {
+            let context = egui::Context::default();
+            let params = ShapeRackParams::default();
+            let host = SliderContext::default();
+            let mut state = UiState {
+                tool,
+                ..Default::default()
+            };
+            let modifiers = egui::Modifiers {
+                command: true,
+                ctrl: true,
+                ..Default::default()
+            };
+            let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
+            let original = params.volume.curve();
+            let start = curve_position(plot, 4.0 / SEGMENT_COUNT as f32, original.points[4]);
+            canvas_frame(
+                &context,
+                &params,
+                &host,
+                &mut state,
+                vec![
+                    egui::Event::PointerMoved(start),
+                    button(start, true, modifiers),
+                ],
+                modifiers,
+            );
+            assert_eq!(state.node, Some(4));
+            assert!(state.bend_segment.is_none());
+            let target = curve_position(plot, 10.0 / SEGMENT_COUNT as f32, 0.62);
+            canvas_frame(
+                &context,
+                &params,
+                &host,
+                &mut state,
+                vec![egui::Event::PointerMoved(target)],
+                modifiers,
+            );
+            let preview = state.curve_preview.unwrap();
+            assert_eq!(preview.points[4], 0.5);
+            assert_eq!(preview.points[10], original.points[10]);
+            assert_eq!(preview.tensions, original.tensions);
+            assert_eq!(state.node, Some(4));
+            canvas_frame(
+                &context,
+                &params,
+                &host,
+                &mut state,
+                vec![button(target, false, modifiers)],
+                modifiers,
+            );
+            assert!(host.active.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn bend_hover_uses_closest_handle_and_arrow_over_empty_space_and_latches_segment() {
         let context = egui::Context::default();
         let params = ShapeRackParams::default();
         let host = SliderContext::default();
-        let mut state = UiState {
-            tool: CurveTool::Nodes,
-            ..Default::default()
-        };
-        let modifiers = egui::Modifiers {
-            command: true,
-            ctrl: true,
-            ..Default::default()
-        };
+        let mut state = UiState::default();
+        let modifiers = egui::Modifiers::default();
         let plot = canvas_frame(&context, &params, &host, &mut state, vec![], modifiers);
-        let original = params.volume.curve();
-        let start = curve_position(plot, 4.0 / SEGMENT_COUNT as f32, original.points[4]);
+        let curve = params.volume.curve();
+        let node = curve_position(plot, 5.0 / SEGMENT_COUNT as f32, curve.points[5]);
+        let phase = 5.5 / SEGMENT_COUNT as f32;
+        let diamond = curve_position(plot, phase, curve.value(phase as f64));
+        let empty = curve_position(plot, phase, 0.2);
+        for (position, expected) in [
+            (empty, egui::CursorIcon::Default),
+            (node, egui::CursorIcon::ResizeVertical),
+            (diamond, egui::CursorIcon::ResizeVertical),
+        ] {
+            canvas_frame(
+                &context,
+                &params,
+                &host,
+                &mut state,
+                vec![egui::Event::PointerMoved(position)],
+                modifiers,
+            );
+            let (current_plot, cursor) =
+                canvas_frame_with_cursor(&context, &params, &host, &mut state, vec![], modifiers);
+            assert_eq!(
+                cursor,
+                expected,
+                "pointer {position:?}, plot {current_plot:?}, hit {:?}",
+                curve_handle_at(current_plot, &curve, position, true)
+            );
+        }
+        // At narrow graph widths the two hit areas overlap. Pick the closer
+        // diamond instead of allowing the larger point radius to steal it.
+        let flat = Curve::from_preset(Preset::Flat);
+        let flat_node = curve_position(plot, 12.0 / SEGMENT_COUNT as f32, 1.0);
+        let flat_diamond = curve_position(plot, 12.5 / SEGMENT_COUNT as f32, 1.0);
+        let overlap = flat_node.lerp(flat_diamond, 0.65);
+        assert!(overlap.distance(flat_node) < 12.0);
+        assert!(overlap.distance(flat_diamond) < 9.0);
+        assert_eq!(
+            curve_handle_at(plot, &flat, overlap, true),
+            Some(CurveHandle::Bend(12))
+        );
         canvas_frame(
             &context,
             &params,
             &host,
             &mut state,
             vec![
-                egui::Event::PointerMoved(start),
-                button(start, true, modifiers),
+                egui::Event::PointerMoved(diamond),
+                button(diamond, true, modifiers),
             ],
             modifiers,
         );
-        let target = curve_position(plot, 10.0 / SEGMENT_COUNT as f32, 0.62);
-        canvas_frame(
+        assert_eq!(state.bend_segment, Some(5));
+        assert!(state.node.is_none());
+        let (_, cursor) = canvas_frame_with_cursor(
             &context,
             &params,
             &host,
             &mut state,
-            vec![egui::Event::PointerMoved(target)],
+            vec![egui::Event::PointerMoved(node)],
             modifiers,
         );
-        let preview = state.curve_preview.unwrap();
-        assert_eq!(preview.points[4], 0.5);
-        assert_eq!(preview.points[10], original.points[10]);
+        assert_eq!(state.bend_segment, Some(5));
+        assert!(state.node.is_none());
+        assert_eq!(state.curve_preview.unwrap().points, curve.points);
+        assert_eq!(cursor, egui::CursorIcon::ResizeVertical);
         canvas_frame(
             &context,
             &params,
             &host,
             &mut state,
-            vec![button(target, false, modifiers)],
+            vec![button(node, false, modifiers)],
             modifiers,
+        );
+        assert!(host.active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn alt_press_on_a_node_always_bends_and_keeps_target_after_alt_is_released() {
+        let context = egui::Context::default();
+        let params = ShapeRackParams::default();
+        let host = SliderContext::default();
+        let mut state = UiState::default();
+        let alt = egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        let plot = canvas_frame(&context, &params, &host, &mut state, vec![], alt);
+        let curve = params.volume.curve();
+        let node = curve_position(plot, 4.0 / SEGMENT_COUNT as f32, curve.points[4]);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(node), button(node, true, alt)],
+            alt,
+        );
+        assert_eq!(state.bend_segment, Some(4));
+        assert!(state.node.is_none());
+        let normal = egui::Modifiers::default();
+        let dragged = node - vec2(0.0, 28.0);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![egui::Event::PointerMoved(dragged)],
+            normal,
+        );
+        let preview = state.curve_preview.unwrap();
+        assert_eq!(preview.points, curve.points);
+        assert!(preview.tensions[4] > 0.0);
+        canvas_frame(
+            &context,
+            &params,
+            &host,
+            &mut state,
+            vec![button(dragged, false, normal)],
+            normal,
         );
         assert!(host.active.lock().unwrap().is_empty());
     }

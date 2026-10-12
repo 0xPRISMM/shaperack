@@ -1,6 +1,6 @@
 # ShapeRack
 
-Download the [v0.2.1 Windows installer or ZIP](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1), with improved filter and drive processing, saveable/shareable rack presets, and Bend as the default curve editing tool.
+Download the [v0.2.2 Windows installer or ZIP](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.2), with improved filter and drive processing, saveable/shareable rack presets, and a default Bend tool that edits both points and segment curves.
 
 An original Rust modulation rack for **Windows x64 VST3 and CLAP** hosts. Draw a rhythm and use it to animate volume, a low-pass filter, stereo balance, or soft saturation. Designed for FL Studio mixer inserts.
 
@@ -24,17 +24,17 @@ ShapeRack is an independent project inspired by drawable modulation effects. It 
 
 ## Install in FL Studio
 
-**[Download ShapeRack 0.2.1 Setup for Windows x64 (.exe)](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.1/ShapeRack-0.2.1-Setup.exe)**
+**[Download ShapeRack 0.2.2 Setup for Windows x64 (.exe)](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.2/ShapeRack-0.2.2-Setup.exe)**
 
 Close your DAW, run the setup EXE, and approve the administrator prompt. Setup installs the VST3 plugin in the standard Common Files location, offers an optional CLAP component, and adds a Windows uninstaller. Then scan for plugins in FL Studio and load ShapeRack in a mixer effect slot. No Rust or build tools are needed to install the release.
 
-The installer is unsigned, so Windows may display an unknown-publisher notice. A [ZIP package for manual installation](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1) is also available. See [INSTALL.md](INSTALL.md) for paths, scanning, updates, and removal. FL Studio 2025 checks with the v0.2.0 VST3 confirmed signal activity during playback, stopped note previews, combined source routing, and preset import/export. These checks used meters and waveform displays; speaker listening and FL project save/reopen remain untested. See [VALIDATION.md](VALIDATION.md) for version-specific coverage.
+The installer is unsigned, so Windows may display an unknown-publisher notice. A [ZIP package for manual installation](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.2) is also available. See [INSTALL.md](INSTALL.md) for paths, scanning, updates, and removal. FL Studio 2025 checks with the v0.2.0 VST3 confirmed signal activity during playback, stopped note previews, combined source routing, and preset import/export. These checks used meters and waveform displays; speaker listening and FL project save/reopen remain untested. See [VALIDATION.md](VALIDATION.md) for version-specific coverage.
 
 ## Quick start
 
 1. Put ShapeRack on a sustained bass, pad, or synth mixer channel.
 2. Choose **Quarter-note pump** from **RACK PRESET** for a duck on every quarter-note beat.
-3. Drag a segment diamond in the default **Bend** mode. Choose **Nodes** from the tool dropdown to move point values, or **Draw** to paint across the curve.
+3. In the default **Bend** mode, drag a curve point up or down to change its value, or drag a segment diamond to bend the line between points. Choose **Draw** from the tool dropdown to paint across the curve.
 4. Select Filter, Pan, or Drive, then click its **Filter OFF**, **Pan OFF**, or **Drive OFF** button to turn it on. The button lights up and says **ON**. Each tab has its own curve; all modules share the clock.
 5. Adjust Amount, Mix, and De-click to taste. Pan has no effect on mono audio.
 
@@ -42,16 +42,16 @@ The curve resets each cycle, so a mismatched start/end value can click at zero D
 
 ## Edit curves
 
-Bend is the default tool when the editor opens. Nodes, Draw, and Line remain available in the tool dropdown.
+Bend is the default tool when the editor opens. It lets you edit points and segment bends without changing tools. Nodes, Draw, and Line remain available in the tool dropdown.
 
 | Tool | Gesture |
 | --- | --- |
 | Nodes | Drag points vertically. Hold **Shift** for fine adjustment; double-click a point to blend it into its neighbours. |
 | Draw | Paint across the graph; values between crossed points are filled in. |
 | Line | Drag from the start to the end of a straight ramp. |
-| Bend | Drag a segment diamond to change its curvature; double-click to straighten. **Alt-drag** bends a segment from the other tools. |
+| Bend | Drag directly on a curve point to move it vertically; double-click a point to blend it into its neighbours. Drag a segment diamond to change its curvature; double-click a diamond to straighten. **Alt-drag** bends a segment from the other tools. |
 
-The 17 point times stay at sixteen equal divisions of the selected cycle. **Snap** controls vertical values: Off, 1/4, 1/8, or 1/16. **Ctrl** temporarily enables quarter snapping when Snap is off; **Shift** bypasses snapping and gives fine control for Nodes and Bend. Bending a Step curve switches it to Linear so the bend can be heard.
+In Bend mode, the pointer stays an arrow over blank graph space and changes to a vertical editing cursor over a point or segment diamond. The 17 point times stay at sixteen equal divisions of the selected cycle. **Snap** controls vertical values: Off, 1/4, 1/8, or 1/16. **Ctrl** temporarily enables quarter snapping when Snap is off; **Shift** bypasses snapping and gives fine control for Nodes and Bend. Bending a Step curve switches it to Linear so the bend can be heard.
 
 Use **Undo** and **Redo** for the selected module's curve edits. **Tools** offers Copy curve, Paste curve, Invert vertically, Reverse in time, Smooth points, Clear segment bends, and Flatten to neutral. Copy/paste includes bends and interpolation. The **Shape** buttons replace only the selected module's curve; the **RACK PRESET** menu recalls the complete rack.
 
@@ -66,7 +66,7 @@ The **RACK PRESET** dropdown contains five factory sounds—Clean rack, Quarter-
 | Export... | Choose a destination in the native save dialog to share or back up the current rack as `.shaperack.json`. |
 | Refresh | Reload the library to see presets saved by another ShapeRack instance. |
 
-The default library is `%APPDATA%\PRISMM\ShapeRack\Presets`. Preset files contain all 153 audio parameters, including module enables, curves, bends, timing, Mix, Output, and Bypass. They leave the editor window size alone. Your DAW project also stores the current rack, independently of exported preset files. Uninstalling ShapeRack retains your personal preset library.
+The installer creates `%APPDATA%\PRISMM\ShapeRack\Presets` and includes the five portable factory presets in its `Factory` subfolder. The plugin also creates this folder on first opening, including ZIP installations. Existing files are preserved during updates and uninstall. Preset files contain all 153 audio parameters, including module enables, curves, bends, timing, Mix, Output, and Bypass. They leave the editor window size alone. Your DAW project also stores the current rack, independently of exported preset files. Uninstalling ShapeRack retains your personal preset library.
 
 ## Build from source
 
@@ -75,7 +75,7 @@ Install current stable Rust and the Windows Visual Studio C++ build tools, then:
 ```powershell
 cargo test --locked --lib
 cargo xtask bundle shaperack --release --locked
-powershell -NoProfile -File scripts/package.ps1 -Version 0.2.1
+powershell -NoProfile -File scripts/package.ps1 -Version 0.2.2
 ```
 
 The bundled VST3 and CLAP files are in `target/bundled/`; the ZIP is in `dist/`. The dependency lockfile and required NIH-plug sources are checked in. [Vendor notes](vendor/README.md) describe the small CLAP automation timing fix applied to the framework.
@@ -86,7 +86,7 @@ To build the setup EXE, also install [Inno Setup 6](https://jrsoftware.org/isinf
 powershell -NoProfile -File scripts/build-installer.ps1
 ```
 
-This creates `dist/ShapeRack-0.2.1-Setup.exe`. If the compiler is in a custom location, pass `-InnoCompiler 'C:\path\to\ISCC.exe'`. Building the installer does not install the plugin on your machine.
+This creates `dist/ShapeRack-0.2.2-Setup.exe`. If the compiler is in a custom location, pass `-InnoCompiler 'C:\path\to\ISCC.exe'`. Building the installer does not install the plugin on your machine.
 
 For a native editor preview without a DAW (dummy backend produces no audio):
 
@@ -98,7 +98,7 @@ GitHub Actions checks formatting, linting, Rust tests, and the real CLAP and VST
 
 ## Release scope
 
-Version 0.2.1 remains experimental. The filter uses a smoothed two-pole Butterworth state-variable design. Drive uses first-order antiderivative antialiasing (ADAA) to reduce folded harmonics; strong drive can still alias, and the wet signal has mild high-frequency smoothing and approximately half a sample of phase delay. It adds no buffered integer-sample latency. The DSP implementations reference [Cytomic's filter derivation](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf) and the [DAFx antiderivative antialiasing paper](https://dafx.de/paper-archive/2025/DAFx25_paper_30.pdf).
+Version 0.2.2 remains experimental. The filter uses a smoothed two-pole Butterworth state-variable design. Drive uses first-order antiderivative antialiasing (ADAA) to reduce folded harmonics; strong drive can still alias, and the wet signal has mild high-frequency smoothing and approximately half a sample of phase delay. It adds no buffered integer-sample latency. The DSP implementations reference [Cytomic's filter derivation](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf) and the [DAFx antiderivative antialiasing paper](https://dafx.de/paper-archive/2025/DAFx25_paper_30.pdf).
 
 Pan controls stereo balance. Bar labels assume four quarter-note beats. Modules share one clock and their order is fixed. Curve nodes stay at fixed time positions. This version does not include multiband processing, audio/MIDI triggering, time warping, or envelope followers.
 

@@ -1,4 +1,4 @@
-ShapeRack 0.2.1 is installed.
+ShapeRack 0.2.2 is installed.
 
 Load ShapeRack in FL Studio:
 
@@ -18,9 +18,12 @@ with playback stopped (SYNC PREVIEW). Starting playback realigns the curve
 with the song (SYNC PLAYING). Free sets an independent rate in Hz.
 
 Bend is the default editing tool. Nodes, Draw, and Line remain in Edit.
-Drag a diamond or Alt-drag a segment to bend it; Shift gives fine control
-in Nodes and Bend. Snap adjusts
-vertical values. The 17 point times stay at equal divisions of the cycle.
+In Bend, drag directly on a curve point to move it up or down, or drag
+a segment diamond to bend the curve. The pointer stays an arrow over
+blank graph space and becomes a vertical editing cursor over a handle.
+Alt-drag a segment to bend it from other tools; Shift gives fine control
+in Nodes and Bend. Snap adjusts vertical values. The 17 point times
+stay at equal divisions of the cycle.
 Use Undo, Redo, and Tools for copy/paste, invert, reverse,
 and flatten. Shape buttons replace the current module's curve.
 
@@ -30,10 +33,14 @@ Import... loads a shared .shaperack.json file; use Save to keep it in your libra
 Export... saves a portable file through the Windows file dialog.
 Refresh picks up presets saved by another ShapeRack instance.
 
-Your personal preset library is stored in:
+Setup creates your preset folder and includes five portable files in Factory.
+Presets folder opens it in Windows Explorer. Save keeps personal presets here.
+Existing files survive updates and uninstall. ZIP installs create it on first use.
+
+Your preset library is stored in:
 %APPDATA%\PRISMM\ShapeRack\Presets
 
-Version 0.2.1 includes a 12 dB/octave Butterworth filter and antialiased drive.
+Version 0.2.2 includes a 12 dB/octave Butterworth filter and antialiased drive.
 
 If you selected CLAP, rescan the CLAP plugin folder in a compatible host:
 C:\Program Files\Common Files\CLAP

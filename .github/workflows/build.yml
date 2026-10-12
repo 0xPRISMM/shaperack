@@ -46,7 +46,11 @@ jobs:
       - name: Build Windows installer
         run: powershell -NoProfile -File scripts/build-installer.ps1 -InnoCompiler "$env:SHAPERACK_ISCC"
       - name: Validate installer and uninstaller in staging
-        run: powershell -NoProfile -File scripts/validate-installer.ps1 -InnoCompiler "$env:SHAPERACK_ISCC"
+        # Rust's target cache can contain preserved files from an earlier validation.
+        # Keep each staging root outside that cache, including workflow reruns.
+        env:
+          SHAPERACK_INSTALLER_TEST_ROOT: ${{ runner.temp }}\ShapeRack-installer-test-${{ github.run_id }}-${{ github.run_attempt }}
+        run: powershell -NoProfile -File scripts/validate-installer.ps1 -InnoCompiler "$env:SHAPERACK_ISCC" -TestRoot "$env:SHAPERACK_INSTALLER_TEST_ROOT"
       - uses: actions/upload-artifact@v4
         with:
           name: ShapeRack-windows-x64

@@ -1,8 +1,8 @@
-# ShapeRack 0.2.1 — Windows x64 installation
+# ShapeRack 0.2.2 — Windows x64 installation
 
 ## Install with the EXE
 
-1. Download **[ShapeRack-0.2.1-Setup.exe](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.1/ShapeRack-0.2.1-Setup.exe)** from the GitHub release assets.
+1. Download **[ShapeRack-0.2.2-Setup.exe](https://github.com/0xPRISMM/shaperack/releases/download/v0.2.2/ShapeRack-0.2.2-Setup.exe)** from the GitHub release assets.
 2. Close FL Studio and any other host using ShapeRack.
 3. Run the setup EXE and approve the administrator prompt. The installer is unsigned, so Windows may identify the publisher as unknown.
 4. Keep the VST3 component selected for FL Studio. Select the optional CLAP component if you also want that format installed.
@@ -33,13 +33,15 @@ To enable an effect, select its tab and click the button labeled **Filter OFF**,
 
 ## Your preset library
 
+Setup creates `%APPDATA%\PRISMM\ShapeRack\Presets` with all five included presets in `Factory`. **Presets folder** opens it in Windows Explorer. ZIP installations create the same folder when you first open the plugin. Existing presets are preserved during updates and uninstall.
+
 Use **RACK PRESET** to select a factory or personal preset. **Save...** asks for a name and saves the full rack to `%APPDATA%\PRISMM\ShapeRack\Presets`. **Import...** loads a shared `.shaperack.json` file; use Save afterward to keep it in your library. **Export...** opens a native save dialog for sharing or backup. **Refresh** picks up presets saved by another plugin instance.
 
-Preset files include all module settings, curve points and bends, and global audio controls. They leave the editor size alone. Bend opens by default; Nodes, Draw, and Line remain available in the Edit dropdown. See the [curve editing guide](README.md#edit-curves) for snapping and undo/redo.
+Preset files include all module settings, curve points and bends, and global audio controls. They leave the editor size alone. Bend opens by default: drag directly on a curve point to move it vertically, or drag a segment diamond to bend the curve. The pointer stays an arrow over blank graph space and changes to a vertical editing cursor over these handles. The 17 point times stay fixed. Nodes, Draw, and Line remain available in the Edit dropdown. See the [curve editing guide](README.md#edit-curves) for snapping and undo/redo.
 
 ## ZIP alternative
 
-1. Download and extract the Windows x64 ZIP from the [v0.2.1 release](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.1).
+1. Download and extract the Windows x64 ZIP from the [v0.2.2 release](https://github.com/0xPRISMM/shaperack/releases/tag/v0.2.2).
 2. Copy the **entire `ShapeRack.vst3` folder**, including `Contents`, to the VST3 location above. Windows may request administrator approval.
 3. If needed, copy `ShapeRack.clap` to the CLAP location above.
 4. Rescan the host using the steps above.
@@ -57,7 +59,7 @@ Your personal preset files are retained during updates and uninstallation. Back 
 The [README build instructions](README.md#build-from-source) cover the Rust toolchain, C++ build tools, and plugin bundle. After building the bundle, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run:
 
 ```powershell
-powershell -NoProfile -File scripts/package.ps1 -Version 0.2.1
+powershell -NoProfile -File scripts/package.ps1 -Version 0.2.2
 powershell -NoProfile -File scripts/build-installer.ps1
 ```
 

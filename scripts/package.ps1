@@ -19,5 +19,6 @@ foreach ($name in @('README.md', 'INSTALL.md', 'LICENSE', 'THIRD_PARTY.md', 'VAL
     Copy-Item -LiteralPath (Join-Path $repoRoot $name) -Destination $stageRoot -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'licenses') -Destination $stageRoot -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'presets') -Destination $stageRoot -Recurse -Force
 Compress-Archive -Path (Join-Path $stageRoot '*') -DestinationPath $zipPath -Force
 Get-Item -LiteralPath $zipPath | Select-Object FullName,Length

@@ -238,6 +238,41 @@ fn factory_presets() -> Vec<RackPreset> {
     vec![clean, pump, sweep, pan, warm]
 }
 
+/// Create the same library for installed and manually copied plugins. Existing
+/// files belong to the user and are never replaced, including factory copies.
+fn ensure_library(directory: &Path) -> Result<(), String> {
+    let factory = directory.join("Factory");
+    std::fs::create_dir_all(&factory)
+        .map_err(|error| format!("Could not create preset folder: {error}"))?;
+    for preset in factory_presets() {
+        let path = factory.join(preset_filename(&preset.name));
+        if !path.exists() {
+            if let Err(error) = preset.write(&path, false) {
+                // Another plugin instance may have published this file first.
+                if !path.is_file() {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_library(directory: &Path) -> Result<(), String> {
+    let path = std::path::absolute(directory).map_err(|error| error.to_string())?;
+    std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open preset folder: {error}"))
+}
+
+#[cfg(not(windows))]
+fn open_library(_directory: &Path) -> Result<(), String> {
+    Err("Opening the preset folder is supported on Windows.".into())
+}
+
 #[cfg(windows)]
 fn import_path(directory: Option<&Path>) -> Option<PathBuf> {
     let mut dialog = rfd::FileDialog::new()
@@ -312,6 +347,11 @@ pub fn show_controls(
     if !state.initialized {
         state.initialized = true;
         state.directory = library_directory();
+        if let Some(directory) = &state.directory {
+            if let Err(error) = ensure_library(directory) {
+                state.message(error, true);
+            }
+        }
         state.refresh(params);
     }
     let current_name = params
@@ -376,6 +416,16 @@ pub fn show_controls(
             }
         }
         if ui.small_button("Refresh").on_hover_text("Refresh presets saved by other ShapeRack instances.").clicked() { state.refresh(params); }
+        if ui.add_enabled(state.directory.is_some(), egui::Button::new("Presets folder").small()).on_hover_text("Open your preset folder. Save personal presets here; Factory contains the five included portable presets.").clicked() {
+            let result = state.directory.as_ref().ok_or_else(|| "Preset directory is unavailable.".to_owned()).and_then(|directory| {
+                ensure_library(directory)?;
+                open_library(directory)
+            });
+            match result {
+                Ok(()) => state.message("Opened presets folder. Factory contains the included presets.", false),
+                Err(error) => state.message(error, true),
+            }
+        }
     });
     if let Some(preset) = selected {
         match apply(&preset, params, setter) {
@@ -474,6 +524,53 @@ pub fn show_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_creates_portable_factory_files_and_preserves_existing_presets() {
+        let temporary_root = std::env::temp_dir();
+        let directory = temporary_root.join(format!(
+            "shaperack-library-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(directory.starts_with(&temporary_root));
+        ensure_library(&directory).unwrap();
+        let params = ShapeRackParams::default();
+        let factory = factory_presets();
+        assert_eq!(
+            std::fs::read_dir(directory.join("Factory"))
+                .unwrap()
+                .count(),
+            5
+        );
+        for preset in &factory {
+            let path = directory
+                .join("Factory")
+                .join(preset_filename(&preset.name));
+            assert_eq!(RackPreset::read(&path, &params).unwrap(), *preset);
+        }
+        let personal = directory.join("preset-Personal.shaperack.json");
+        factory[0].write(&personal, false).unwrap();
+        let edited_factory = directory
+            .join("Factory")
+            .join(preset_filename(&factory[0].name));
+        let mut edited = factory[0].clone();
+        edited.name = "My edited factory copy".into();
+        edited.write(&edited_factory, true).unwrap();
+        ensure_library(&directory).unwrap();
+        assert_eq!(RackPreset::read(&edited_factory, &params).unwrap(), edited);
+        assert_eq!(RackPreset::read(&personal, &params).unwrap(), factory[0]);
+        let mut state = PresetUiState {
+            directory: Some(directory.clone()),
+            ..Default::default()
+        };
+        state.refresh(&params);
+        assert_eq!(state.library.len(), 1); // Factory files stay in the Factory menu.
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn full_rack_state_recall_converts_parameters_and_preserves_editor_fields() {

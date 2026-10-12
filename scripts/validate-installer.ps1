@@ -23,6 +23,11 @@ if ($validationRoot -eq $validationDrive -or $validationRoot -match '[{}"''\r\n]
 $appRoot = Join-Path $validationRoot 'PRISMM\ShapeRack'
 $installedVst3 = Join-Path $validationRoot 'VST3\ShapeRack.vst3'
 $installedClap = Join-Path $validationRoot 'CLAP\ShapeRack.clap'
+$presetRoot = Join-Path $validationRoot 'Presets'
+$factoryRoot = Join-Path $presetRoot 'Factory'
+$factorySource = Join-Path $validationRepoRoot 'presets\Factory'
+$editedFactoryPath = $null
+$editedFactoryHash = $null
 $uninstallerPath = Join-Path $appRoot 'Uninstall\unins000.exe'
 $bundleRoot = Join-Path $validationRepoRoot 'target\bundled'
 
@@ -98,8 +103,29 @@ function Assert-InstalledPayload {
     }
     Assert-FileHash -Source (Join-Path $validationRepoRoot 'installer\AfterInstall.txt') -Destination (Join-Path $appRoot 'AfterInstall.txt')
     Assert-DirectoryHashes -Source (Join-Path $validationRepoRoot 'licenses') -Destination (Join-Path $appRoot 'licenses')
+    Assert-PresetFiles
     if (-not (Test-Path -LiteralPath $uninstallerPath -PathType Leaf)) {
         throw 'The staging installer did not create its expected uninstaller.'
+    }
+}
+
+function Assert-PresetFiles {
+    $factoryFiles = @(Get-ChildItem -LiteralPath $factorySource -Filter '*.shaperack.json' -File)
+    if ($factoryFiles.Count -ne 5) { throw 'Expected five bundled factory presets.' }
+    foreach ($factoryFile in $factoryFiles) {
+        $installedPreset = Join-Path $factoryRoot $factoryFile.Name
+        if ($installedPreset -eq $editedFactoryPath) {
+            if ((Get-FileHash -LiteralPath $installedPreset -Algorithm SHA256).Hash -ne $editedFactoryHash) {
+                throw 'Installation or uninstallation replaced an existing preset.'
+            }
+        } else {
+            Assert-FileHash -Source $factoryFile.FullName -Destination $installedPreset
+        }
+        $preset = Get-Content -LiteralPath $installedPreset -Raw | ConvertFrom-Json
+        if ($preset.format -ne 'shaperack-preset' -or $preset.version -ne 1 -or
+            @($preset.parameters.PSObject.Properties).Count -ne 153) {
+            throw "Invalid installed factory preset: $installedPreset"
+        }
     }
 }
 
@@ -128,6 +154,7 @@ function Uninstall-StagedPayload {
         $remainingLicenses = @(Get-ChildItem -LiteralPath (Join-Path $appRoot 'licenses') -File -Recurse)
         if ($remainingLicenses.Count -ne 0) { throw 'Uninstall left owned license files.' }
     }
+    Assert-PresetFiles
 }
 
 # Build precisely the TestRoot variant; this never runs the production installer.
@@ -154,6 +181,14 @@ Invoke-BinaryCheck -Script 'validate_vst3.py' -Binary $installedVst3
 Uninstall-StagedPayload -Phase 'default'
 Write-Host 'PASS default installation: VST3 only, exact payload hashes, exported factory, clean uninstall.'
 
+# Retained presets must survive a later update, including user edits to a factory copy.
+$editedFactoryPath = Join-Path $factoryRoot 'preset-Clean-rack.shaperack.json'
+[IO.File]::AppendAllText($editedFactoryPath, "`n ")
+$editedFactoryHash = (Get-FileHash -LiteralPath $editedFactoryPath -Algorithm SHA256).Hash
+$personalPresetPath = Join-Path $presetRoot 'preset-Personal-test.shaperack.json'
+Copy-Item -LiteralPath $editedFactoryPath -Destination $personalPresetPath
+$personalPresetHash = (Get-FileHash -LiteralPath $personalPresetPath -Algorithm SHA256).Hash
+
 Invoke-HiddenSetup -Executable $testingInstaller -Operation 'Full install' -Arguments (
     $baseArguments + @('/TYPE=full', ('/LOG="' + (Join-Path $validationRoot 'full-install.log') + '"'))
 )
@@ -166,9 +201,13 @@ $preservedPath = Join-Path $appRoot ('preserved-user-file-' + [Guid]::NewGuid().
 $preservedText = 'Installer validation: this unrelated file must survive uninstall.'
 [System.IO.File]::WriteAllText($preservedPath, $preservedText)
 Uninstall-StagedPayload -Phase 'full'
+if ((Get-FileHash -LiteralPath $personalPresetPath -Algorithm SHA256).Hash -ne $personalPresetHash) {
+    throw 'Installation or uninstallation modified a personal preset.'
+}
 if (-not (Test-Path -LiteralPath $preservedPath -PathType Leaf) -or
     [System.IO.File]::ReadAllText($preservedPath) -ne $preservedText) {
     throw 'Uninstall removed or modified an unrelated user file.'
 }
 Write-Host 'PASS full installation: VST3 + CLAP, exact payload hashes, real plugin API checks, clean uninstall preserving unrelated files.'
+Write-Host 'PASS preset folder: five valid factory files, edited factory copy and personal preset survive updates and uninstall.'
 Write-Host "Installer validation passed. Logs and preserved-file fixture remain under: $validationRoot"
